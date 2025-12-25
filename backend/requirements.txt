@@ -1,0 +1,38 @@
+# Django Core
+Django>=5.0,<6.0
+djangorestframework>=3.14.0
+django-cors-headers>=4.3.0
+django-filter>=23.5
+
+# Authentication
+djangorestframework-simplejwt>=5.3.0
+PyJWT>=2.8.0
+
+# Database
+mysqlclient>=2.2.0
+
+# Celery & Redis
+celery>=5.3.0
+redis>=5.0.0
+
+# Image Processing
+numpy>=1.26.0
+Pillow>=10.2.0
+
+# Environment & Config
+python-decouple>=3.8
+python-dotenv>=1.0.0
+
+# Utilities
+python-dateutil>=2.8.2
+pytz>=2024.1
+
+# API Documentation
+drf-spectacular>=0.27.0
+
+# Security
+cryptography>=41.0.0
+
+# Production
+gunicorn>=21.2.0
+whitenoise>=6.6.0
