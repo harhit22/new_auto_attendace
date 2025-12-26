@@ -69,7 +69,7 @@ const AdminEmployeesPage = () => {
     };
 
     const copyEnrollLink = (emp) => {
-        const link = `${window.location.origin}/enroll-face?org=${attendanceOrg.org_code}&emp=${emp.employee_id}`;
+        const link = `${window.location.origin}/enroll-employee?org=${attendanceOrg.org_code}&emp=${emp.employee_id}`;
         navigator.clipboard.writeText(link);
         setStatus(`✅ Link copied! Send to ${emp.name || emp.first_name}`);
     };

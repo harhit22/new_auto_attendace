@@ -161,7 +161,10 @@ class SaaSEmployee(models.Model):
     face_image = models.ImageField(upload_to='employee_faces/', null=True, blank=True)
     
     # Dataset for training (images stored, not yet trained)
-    captured_embeddings = models.JSONField(default=list, blank=True, help_text="Embeddings waiting for training")
+    # captured_embeddings = 512-d from DeepFace (backend processing)
+    captured_embeddings = models.JSONField(default=list, blank=True, help_text="DeepFace 512-d embeddings for heavy model")
+    # captured_embeddings_light = 128-d from face-api.js (frontend capture)
+    captured_embeddings_light = models.JSONField(default=list, blank=True, help_text="face-api.js 128-d embeddings for light model")
     image_count = models.IntegerField(default=0, help_text="Number of captured face images")
     image_status = models.CharField(max_length=20, choices=IMAGE_STATUS_CHOICES, default='pending')
     

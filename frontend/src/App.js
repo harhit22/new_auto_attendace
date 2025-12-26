@@ -35,6 +35,7 @@ import EmployeeLogin from './pages/attendance/EmployeeLogin';
 import EmployeeDashboard from './pages/attendance/EmployeeDashboard';
 import KioskPage from './pages/KioskPage';
 import SelfEnrollPage from './pages/SelfEnrollPage';
+import EnrollEmployeePage from './pages/EnrollEmployeePage';
 
 function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -113,6 +114,7 @@ function App() {
           {/* Public kiosk and enrollment */}
           <Route path="/kiosk" element={<KioskPage />} />
           <Route path="/enroll-face" element={<SelfEnrollPage />} />
+          <Route path="/enroll-employee" element={<EnrollEmployeePage />} />
 
           {/* Redirects for old routes */}
           <Route path="/dashboard" element={<Navigate to="/attendance/login" replace />} />

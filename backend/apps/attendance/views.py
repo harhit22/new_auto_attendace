@@ -97,6 +97,35 @@ class VerifyEmployeeView(APIView):
         })
 
 
+class GetOrgSettingsView(APIView):
+    """
+    Get org settings (for Kiosk to refresh recognition_mode without password)
+    GET /api/v1/attendance/org-settings/?org_code=XXX
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        org_code = request.GET.get('org_code', '').upper().strip()
+        
+        if not org_code:
+            return Response({'error': 'org_code required'}, status=400)
+        
+        try:
+            org = Organization.objects.get(org_code=org_code, is_active=True)
+        except Organization.DoesNotExist:
+            return Response({'error': 'Organization not found'}, status=404)
+        
+        return Response({
+            'success': True,
+            'organization': {
+                'id': str(org.id),
+                'org_code': org.org_code,
+                'name': org.name,
+                'recognition_mode': org.recognition_mode
+            }
+        })
+
+
 class EmployeeLoginView(APIView):
     """
     Employee login with individual credentials
@@ -213,12 +242,15 @@ class EmployeeDashboardView(APIView):
 
 class CaptureImagesView(APIView):
     """
-    Employee captures face images - ONLY SAVES, NO TRAINING
-    POST /api/v1/attendance/capture-images/
+    Employee captures face images - saves for admin review
+    Stores BOTH:
+    - 128-d embeddings from frontend (face-api.js) in captured_embeddings_light
+    - 512-d embeddings from backend (DeepFace) in captured_embeddings
     
-    Saves both:
+    POST: images + optional light_embeddings (128-d from face-api.js)
+    Saves:
     1. Image files to disk (for admin to view)
-    2. Embeddings to database (for training)
+    2. Both embeddings to database (for training)
     """
     parser_classes = [MultiPartParser]
     permission_classes = [AllowAny]
@@ -227,6 +259,8 @@ class CaptureImagesView(APIView):
         org_code = request.data.get('org_code', '').upper().strip()
         employee_id = request.data.get('employee_id', '').strip()
         images = request.FILES.getlist('images')
+        # NEW: Accept 128-d embeddings from frontend (face-api.js)
+        light_embeddings_json = request.data.get('light_embeddings', '[]')
         
         if not org_code or not employee_id:
             return Response({'error': 'org_code and employee_id required'}, status=400)
@@ -244,14 +278,21 @@ class CaptureImagesView(APIView):
             from apps.faces.deepface_service import get_deepface_service
             from django.conf import settings
             import shutil
+            import json
             
             service = get_deepface_service()
+            
+            # Parse light embeddings from frontend
+            try:
+                frontend_light_embeddings = json.loads(light_embeddings_json) if isinstance(light_embeddings_json, str) else light_embeddings_json
+            except:
+                frontend_light_embeddings = []
             
             # Create directory for employee images
             images_dir = os.path.join(settings.MEDIA_ROOT, 'employee_faces', org_code, employee_id)
             os.makedirs(images_dir, exist_ok=True)
             
-            new_embeddings = []
+            new_heavy_embeddings = []  # 512-d from DeepFace
             faces_detected = 0
             current_count = employee.image_count or 0
             
@@ -261,9 +302,10 @@ class CaptureImagesView(APIView):
                         f.write(chunk)
                     temp_path = f.name
                 
+                # Generate 512-d embedding with DeepFace
                 embedding = service.get_embedding(temp_path)
                 if embedding is not None:
-                    new_embeddings.append(list(embedding))
+                    new_heavy_embeddings.append(list(embedding))
                     faces_detected += 1
                     
                     # Save image to permanent location
@@ -276,12 +318,18 @@ class CaptureImagesView(APIView):
             if faces_detected == 0:
                 return Response({'error': 'No faces detected. Please ensure good lighting and face visibility.'}, status=400)
             
-            # ONLY SAVE - DON'T TRAIN
-            current = employee.captured_embeddings or []
-            current.extend(new_embeddings)
+            # Store 512-d embeddings (for heavy model)
+            current_heavy = employee.captured_embeddings or []
+            current_heavy.extend(new_heavy_embeddings)
+            employee.captured_embeddings = current_heavy
             
-            employee.captured_embeddings = current
-            employee.image_count = len(current)
+            # Store 128-d embeddings (for light model) - from frontend
+            if frontend_light_embeddings:
+                current_light = employee.captured_embeddings_light or []
+                current_light.extend(frontend_light_embeddings)
+                employee.captured_embeddings_light = current_light
+            
+            employee.image_count = len(current_heavy)
             employee.image_status = 'captured'
             employee.save()
             
@@ -290,6 +338,8 @@ class CaptureImagesView(APIView):
                 'message': f'{faces_detected} images saved! Admin will review and train.',
                 'images_added': faces_detected,
                 'total_images': employee.image_count,
+                'light_embeddings_count': len(employee.captured_embeddings_light or []),
+                'heavy_embeddings_count': len(employee.captured_embeddings or []),
                 'image_status': 'captured'
             })
             
@@ -400,13 +450,16 @@ class TrainModelView(APIView):
                     trained_count += 1
                     total_embeddings += len(deep_embeddings)
         else:
-            # LIGHT MODE: Use already-captured embeddings (from face-api.js or quick capture)
+            # LIGHT MODE: Use 128-d embeddings from face-api.js (frontend capture)
             for emp in employees:
-                embeddings = emp.captured_embeddings or []
+                # Use 128-d face-api.js embeddings for light model
+                embeddings = emp.captured_embeddings_light or []
+                
+                # Fallback: if no light embeddings, skip this employee for light training
                 if len(embeddings) < 3:
                     continue
                 
-                # Store in LIGHT model fields
+                # Store in LIGHT model fields (128-d embeddings)
                 emp.light_embeddings = embeddings
                 emp.light_trained = True
                 emp.light_trained_at = timezone.now()
@@ -423,7 +476,7 @@ class TrainModelView(APIView):
                 trained_count += 1
                 total_embeddings += len(embeddings)
         
-        model_name = 'DeepFace/ArcFace' if mode == 'heavy' else 'Quick Embeddings'
+        model_name = 'DeepFace/ArcFace (512-d)' if mode == 'heavy' else 'face-api.js (128-d)'
         
         return Response({
             'success': True,
@@ -1177,5 +1230,177 @@ class TrainSingleEmployeeView(APIView):
                 'message': f'{emp.full_name} trained with Light model!',
                 'embeddings_count': len(embeddings),
                 'mode': 'light'
+            })
+
+
+class GetEmployeeEmbeddingsView(APIView):
+    """
+    Get embeddings for employees for real-time face matching in Kiosk.
+    
+    Parameters:
+    - org_code: Organization code (required)
+    - mode: 'light' or 'heavy' - determines which embeddings to return
+    - employee_id: Optional - get specific employee
+    
+    Returns:
+    - light mode: 128-d embeddings from light_embeddings (face-api.js compatible)
+    - heavy mode: 512-d embeddings from heavy_embeddings (DeepFace)
+    """
+    permission_classes = [AllowAny]
+    
+    def get(self, request):
+        org_code = request.GET.get('org_code', '').upper()
+        employee_id = request.GET.get('employee_id', '')
+        mode = request.GET.get('mode', 'light').lower()  # Default to light
+        
+        if not org_code:
+            return Response({'error': 'org_code required'}, status=400)
+        
+        try:
+            org = Organization.objects.get(org_code=org_code, is_active=True)
+        except Organization.DoesNotExist:
+            return Response({'error': 'Organization not found'}, status=404)
+        
+        # Determine which embedding field to use
+        if mode == 'heavy':
+            trained_field = 'heavy_trained'
+            embeddings_field = 'heavy_embeddings'
+            expected_dim = 512
+        else:
+            trained_field = 'light_trained'
+            embeddings_field = 'light_embeddings'
+            expected_dim = 128
+        
+        # If employee_id provided, get specific employee
+        if employee_id:
+            try:
+                emp = Employee.objects.get(organization=org, employee_id=employee_id)
+            except Employee.DoesNotExist:
+                return Response({'error': 'Employee not found'}, status=404)
+            
+            embeddings = getattr(emp, embeddings_field) or []
+            
+            return Response({
+                'success': True,
+                'mode': mode,
+                'embeddings': embeddings,
+                'employee_id': emp.employee_id,
+                'name': emp.full_name,
+                'trained': getattr(emp, trained_field),
+                'embedding_dimension': len(embeddings[0]) if embeddings else 0,
+                'expected_dimension': expected_dim
+            })
+        
+        # Get all trained employees for this mode
+        filter_kwargs = {
+            'organization': org,
+            trained_field: True
+        }
+        employees = Employee.objects.filter(**filter_kwargs)
+        
+        result = []
+        for emp in employees:
+            embeddings = getattr(emp, embeddings_field) or []
+            if embeddings:
+                result.append({
+                    'employee_id': emp.employee_id,
+                    'name': emp.full_name,
+                    'embeddings': embeddings[:5],  # Limit for performance
+                    'embedding_dimension': len(embeddings[0]) if embeddings else 0
+                })
+        
+        return Response({
+            'success': True,
+            'mode': mode,
+            'expected_dimension': expected_dim,
+            'employees': result,
+            'count': len(result)
+        })
+
+
+class AutoCheckinView(APIView):
+    """
+    Auto check-in endpoint for real-time kiosk.
+    Called when face is recognized for 2+ seconds.
+    """
+    permission_classes = [AllowAny]
+    
+    def post(self, request):
+        org_code = request.data.get('org_code', '').upper()
+        employee_id = request.data.get('employee_id', '')
+        action = request.data.get('action', 'checkin')  # checkin or checkout
+        
+        if not org_code or not employee_id:
+            return Response({'error': 'org_code and employee_id required'}, status=400)
+        
+        try:
+            org = Organization.objects.get(org_code=org_code, is_active=True)
+            emp = Employee.objects.get(organization=org, employee_id=employee_id)
+        except (Organization.DoesNotExist, Employee.DoesNotExist):
+            return Response({'error': 'Organization or employee not found'}, status=404)
+        
+        now = timezone.now()
+        today = now.date()
+        
+        # Check for existing record today
+        existing = AttendanceRecord.objects.filter(
+            employee=emp,
+            organization=org,
+            check_in__date=today
+        ).first()
+        
+        if action == 'checkin':
+            if existing:
+                return Response({
+                    'success': False,
+                    'message': f'{emp.full_name} already checked in today at {existing.check_in.strftime("%H:%M")}'
+                })
+            
+            # Create new check-in
+            AttendanceRecord.objects.create(
+                employee=emp,
+                organization=org,
+                check_in=now,
+                confidence=95.0,
+                verification_method='face_realtime'
+            )
+            
+            return Response({
+                'success': True,
+                'message': f'{emp.full_name} checked in!',
+                'check_in_time': now.isoformat(),
+                'employee': {
+                    'name': emp.full_name,
+                    'employee_id': emp.employee_id
+                }
+            })
+        else:
+            # Check-out
+            if not existing:
+                return Response({
+                    'success': False,
+                    'message': f'{emp.full_name} has not checked in today'
+                })
+            
+            if existing.check_out:
+                return Response({
+                    'success': False,
+                    'message': f'{emp.full_name} already checked out at {existing.check_out.strftime("%H:%M")}'
+                })
+            
+            existing.check_out = now
+            existing.save()
+            
+            work_hours = (now - existing.check_in).total_seconds() / 3600
+            
+            return Response({
+                'success': True,
+                'message': f'{emp.full_name} checked out!',
+                'check_out_time': now.isoformat(),
+                'work_hours': round(work_hours, 2),
+                'employee': {
+                    'name': emp.full_name,
+                    'employee_id': emp.employee_id
+                }
             })
 

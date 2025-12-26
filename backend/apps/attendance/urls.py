@@ -4,7 +4,7 @@ URL configuration for Attendance app - SaaS
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    OrgLoginView, VerifyEmployeeView,
+    OrgLoginView, VerifyEmployeeView, GetOrgSettingsView,
     EmployeeLoginView, EmployeeDashboardView,
     CaptureImagesView, ApproveImagesView,
     TrainModelView, TrainingStatusView,
@@ -12,7 +12,8 @@ from .views import (
     CheckInView, CheckOutView,
     AttendanceRecordViewSet, EmployeeViewSet, OrganizationViewSet,
     EnrollFaceView, EmployeeImagesView,
-    UpdateOrgSettingsView, TrainSingleEmployeeView
+    UpdateOrgSettingsView, TrainSingleEmployeeView,
+    GetEmployeeEmbeddingsView, AutoCheckinView
 )
 
 router = DefaultRouter()
@@ -41,6 +42,7 @@ urlpatterns = [
     
     # Organization settings
     path('update-settings/', UpdateOrgSettingsView.as_view(), name='update-settings'),
+    path('org-settings/', GetOrgSettingsView.as_view(), name='org-settings'),
     
     # Test and delete
     path('test-model/', TestEmployeeModelView.as_view(), name='test-model'),
@@ -50,7 +52,10 @@ urlpatterns = [
     path('checkin/', CheckInView.as_view(), name='checkin'),
     path('checkout/', CheckOutView.as_view(), name='checkout'),
     
+    # Real-time kiosk (multi-face)
+    path('employee-embeddings/', GetEmployeeEmbeddingsView.as_view(), name='employee-embeddings'),
+    path('auto-checkin/', AutoCheckinView.as_view(), name='auto-checkin'),
+    
     # Legacy
     path('employees/<uuid:employee_id>/enroll-face/', EnrollFaceView.as_view(), name='enroll-face'),
 ]
-

@@ -156,7 +156,7 @@ const EmployeeDashboard = () => {
                             </div>
                         </div>
                         <a
-                            href={`/enroll-face?org=${employee.org_code}&emp=${employee.employee_id}`}
+                            href={`/enroll-employee?org=${employee.org_code}&emp=${employee.employee_id}`}
                             className="btn btn-primary"
                         >
                             {employee.face_enrolled ? '📷 Update Face' : '📷 Enroll Face'}

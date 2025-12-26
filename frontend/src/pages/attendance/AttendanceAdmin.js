@@ -15,6 +15,7 @@ const AttendanceAdmin = () => {
     const [todaySummary, setTodaySummary] = useState(null);
     const [recognitionMode, setRecognitionMode] = useState('light');
     const [status, setStatus] = useState('');
+    const [trainingStats, setTrainingStats] = useState({ light_count: 0, heavy_count: 0, total: 0 });
 
     useEffect(() => {
         if (!attendanceOrg) return;
@@ -24,14 +25,23 @@ const AttendanceAdmin = () => {
 
     const loadData = async () => {
         try {
-            const [empRes, summaryRes] = await Promise.all([
+            const [empRes, summaryRes, trainingRes] = await Promise.all([
                 fetch(`${API_BASE}/employees/?organization_id=${attendanceOrg.id}`),
-                fetch(`${API_BASE}/records/today_summary/?organization_id=${attendanceOrg.id}`)
+                fetch(`${API_BASE}/records/today_summary/?organization_id=${attendanceOrg.id}`),
+                fetch(`${API_BASE}/training-status/?org_code=${attendanceOrg.org_code}`)
             ]);
             const empData = await empRes.json();
             const summaryData = await summaryRes.json();
+            const trainingData = await trainingRes.json();
             setEmployees(empData.employees || []);
             setTodaySummary(summaryData);
+            // Count trained employees
+            const emps = trainingData.employees || [];
+            setTrainingStats({
+                light_count: emps.filter(e => e.light_trained).length,
+                heavy_count: emps.filter(e => e.heavy_trained).length,
+                total: emps.length
+            });
         } catch (e) {
             console.error(e);
         }
@@ -225,37 +235,82 @@ const AttendanceAdmin = () => {
                         ⚙️ Kiosk Settings
                     </h3>
                     <div style={{ marginBottom: '20px' }}>
-                        <label style={{ color: 'var(--text-secondary)', marginBottom: '8px', display: 'block' }}>
+                        <label style={{ color: 'var(--text-secondary)', marginBottom: '12px', display: 'block' }}>
                             Face Recognition Model for Check-in
                         </label>
-                        <div style={{ display: 'flex', gap: '12px' }}>
+                        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                            {/* Light Model Option */}
                             <button
                                 className={`btn ${recognitionMode === 'light' ? 'btn-primary' : 'btn-outline'}`}
-                                onClick={() => toggleRecognitionMode('light')}
+                                onClick={() => trainingStats.light_count > 0 && toggleRecognitionMode('light')}
+                                disabled={trainingStats.light_count === 0}
                                 style={{
-                                    padding: '12px 24px',
-                                    background: recognitionMode === 'light' ? 'linear-gradient(135deg, #f59e0b, #d97706)' : undefined
+                                    padding: '16px 24px',
+                                    background: recognitionMode === 'light' ? 'linear-gradient(135deg, #f59e0b, #d97706)' : undefined,
+                                    opacity: trainingStats.light_count === 0 ? 0.5 : 1,
+                                    cursor: trainingStats.light_count === 0 ? 'not-allowed' : 'pointer',
+                                    position: 'relative',
+                                    minWidth: '180px'
                                 }}
                             >
-                                <span style={{ fontSize: '1.2rem', marginRight: '8px' }}>⚡</span>
-                                Light Model
-                                <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '4px' }}>Fast • ~85% accuracy</div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                    <span style={{ fontSize: '1.3rem' }}>⚡</span>
+                                    <span style={{ fontWeight: '600' }}>Light Model</span>
+                                </div>
+                                <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>Fast • ~85% accuracy</div>
+                                <div style={{
+                                    marginTop: '8px',
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.7rem',
+                                    fontWeight: '600',
+                                    background: trainingStats.light_count > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                    color: trainingStats.light_count > 0 ? '#10b981' : '#ef4444'
+                                }}>
+                                    {trainingStats.light_count > 0
+                                        ? `✅ ${trainingStats.light_count}/${trainingStats.total} trained`
+                                        : '❌ No employees trained'
+                                    }
+                                </div>
                             </button>
+
+                            {/* Heavy Model Option */}
                             <button
                                 className={`btn ${recognitionMode === 'heavy' ? 'btn-primary' : 'btn-outline'}`}
-                                onClick={() => toggleRecognitionMode('heavy')}
+                                onClick={() => trainingStats.heavy_count > 0 && toggleRecognitionMode('heavy')}
+                                disabled={trainingStats.heavy_count === 0}
                                 style={{
-                                    padding: '12px 24px',
-                                    background: recognitionMode === 'heavy' ? 'linear-gradient(135deg, #8b5cf6, #7c3aed)' : undefined
+                                    padding: '16px 24px',
+                                    background: recognitionMode === 'heavy' ? 'linear-gradient(135deg, #8b5cf6, #7c3aed)' : undefined,
+                                    opacity: trainingStats.heavy_count === 0 ? 0.5 : 1,
+                                    cursor: trainingStats.heavy_count === 0 ? 'not-allowed' : 'pointer',
+                                    position: 'relative',
+                                    minWidth: '180px'
                                 }}
                             >
-                                <span style={{ fontSize: '1.2rem', marginRight: '8px' }}>🧠</span>
-                                Heavy Model
-                                <div style={{ fontSize: '0.75rem', opacity: 0.8, marginTop: '4px' }}>Slow • ~99% accuracy</div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                                    <span style={{ fontSize: '1.3rem' }}>🧠</span>
+                                    <span style={{ fontWeight: '600' }}>Heavy Model</span>
+                                </div>
+                                <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>DeepFace • ~99% accuracy</div>
+                                <div style={{
+                                    marginTop: '8px',
+                                    padding: '4px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '0.7rem',
+                                    fontWeight: '600',
+                                    background: trainingStats.heavy_count > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
+                                    color: trainingStats.heavy_count > 0 ? '#10b981' : '#ef4444'
+                                }}>
+                                    {trainingStats.heavy_count > 0
+                                        ? `✅ ${trainingStats.heavy_count}/${trainingStats.total} trained`
+                                        : '❌ No employees trained'
+                                    }
+                                </div>
                             </button>
                         </div>
-                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '12px' }}>
-                            This setting controls which model the Kiosk uses for face recognition during check-in/check-out.
+                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '16px' }}>
+                            💡 Only models with trained employees can be selected for kiosk check-in.
                         </p>
                     </div>
                 </div>

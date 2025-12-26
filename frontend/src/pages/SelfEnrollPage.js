@@ -123,12 +123,16 @@ const SelfEnrollPage = () => {
 
             const data = await res.json();
 
-            if (res.ok && data.success) {
+            if (res.ok && data.success && data.employee) {
                 setEmployee(data.employee);
                 setOrg(data.organization);
                 setStep('capture');
             } else {
-                setErrorMessage(data.error || 'Employee not found. Check with your admin.');
+                // Handle error - don't set employee to error object
+                const errorMsg = typeof data.error === 'string'
+                    ? data.error
+                    : (data.message || 'Employee not found. Check with your admin.');
+                setErrorMessage(errorMsg);
                 setStep('error');
             }
         } catch (e) {

@@ -240,7 +240,7 @@ const DashboardPage = () => {
                                                                 className="btn btn-outline"
                                                                 style={{ padding: '6px 12px', fontSize: '0.85rem' }}
                                                                 onClick={() => {
-                                                                    const link = `${window.location.origin}/enroll-face?org=${selectedOrg.org_code}&emp=${e.employee_id}`;
+                                                                    const link = `${window.location.origin}/enroll-employee?org=${selectedOrg.org_code}&emp=${e.employee_id}`;
                                                                     navigator.clipboard.writeText(link);
                                                                     setStatus(`✅ Link copied! Send to ${e.name || e.first_name}`);
                                                                 }}
