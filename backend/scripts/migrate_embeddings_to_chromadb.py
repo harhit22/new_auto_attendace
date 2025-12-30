@@ -50,6 +50,25 @@ def migrate_embeddings():
         for emp in employees:
             # Migrate light embeddings (128-dim)
             light_embeddings = emp.light_embeddings or []
+            
+            # FALLBACK: Check captured_embeddings_light if light_embeddings is empty
+            if not light_embeddings and emp.captured_embeddings_light:
+                print(f"  ⚠ Found {len(emp.captured_embeddings_light)} captured light embeddings (not trained). Auto-training...")
+                light_embeddings = emp.captured_embeddings_light
+                
+                # Fix the database record while we are at it
+                emp.light_embeddings = light_embeddings
+                emp.light_trained = True
+                emp.light_trained_at = django.utils.timezone.now()
+                # Set as active if needed
+                if not emp.face_enrolled:
+                    emp.face_embeddings = light_embeddings
+                    emp.training_mode = 'light'
+                    emp.face_enrolled = True
+                    emp.image_status = 'trained'
+                emp.save()
+                print(f"  ✓ Fixed database record for {emp.full_name}")
+
             if len(light_embeddings) >= 3:
                 success = vector_db.add_embeddings(
                     org_code=org.org_code,
@@ -60,7 +79,7 @@ def migrate_embeddings():
                 )
                 if success:
                     total_light += 1
-                    print(f"  ✓ Light: {emp.full_name} ({len(light_embeddings)} embeddings)")
+                    print(f"  ✓ ChromaDB Light: {emp.full_name} ({len(light_embeddings)} embeddings)")
             
             # Migrate heavy embeddings (512-dim)
             heavy_embeddings = emp.heavy_embeddings or []

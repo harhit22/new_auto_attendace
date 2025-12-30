@@ -104,7 +104,25 @@ class DeepFaceService:
             except Exception as e2:
                 logger.error(f"Error getting embedding: {e2}")
             return None
-    
+
+    def get_all_embeddings(self, image_path):
+        """
+        Generate embeddings for ALL faces in the image.
+        Returns list of dicts: [{'embedding': [], 'facial_area': {'x':, 'y':, 'w':, 'h':}}]
+        """
+        DeepFace = get_deepface()
+        try:
+            results = DeepFace.represent(
+                img_path=image_path,
+                model_name=self.MODEL_NAME,
+                detector_backend=self.DETECTOR_BACKEND,
+                enforce_detection=True,
+                align=True
+            )
+            return results
+        except Exception as e:
+            logger.warning(f"Face detection failed (get_all): {e}")
+            return []
     def train_person(self, person_id, person_name, images, on_progress=None):
         """
         Train/enroll a person with multiple face images.

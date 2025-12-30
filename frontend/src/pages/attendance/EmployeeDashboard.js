@@ -1,6 +1,6 @@
 /**
  * Employee Dashboard Page
- * Shows employee's attendance history, today's status, face check-in, and enrollment options
+ * Shows employee's attendance history, today's status, and enrollment options
  */
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';

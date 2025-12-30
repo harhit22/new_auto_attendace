@@ -84,15 +84,62 @@ class DetectionRequirementAdmin(admin.ModelAdmin):
 
 @admin.register(LoginDetectionResult)
 class LoginDetectionResultAdmin(admin.ModelAdmin):
-    list_display = ['employee', 'organization', 'timestamp', 'compliance_passed', 'face_confidence']
-    list_display = ['employee', 'organization', 'timestamp', 'compliance_passed', 'face_confidence']
-    list_filter = ['compliance_passed']
+    list_display = ['employee', 'timestamp', 'get_scan_type', 'compliance_passed', 'face_confidence', 'organization']
+    list_filter = ['compliance_passed', 'organization']
     # Optimize foreign key lookups
     list_select_related = ['organization', 'employee', 'yolo_model']
     search_fields = ['employee__first_name', 'employee__last_name']
     readonly_fields = ['timestamp']
     autocomplete_fields = ['organization', 'employee', 'yolo_model']
     list_per_page = 50  # Limit rows per page for speed
+
+    def get_scan_type(self, obj):
+        """
+        Determine if this scan counts as Check-In or Check-Out
+        based on the official SaaSAttendance record.
+        """
+        from django.utils.html import format_html
+        from datetime import timedelta
+        from .models import SaaSAttendance
+        
+        # Find the attendance record for this day
+        date = obj.timestamp.date()
+        attendance = SaaSAttendance.objects.filter(
+            employee=obj.employee,
+            date=date
+        ).first()
+        
+        if not attendance:
+            return "-"
+            
+        res = []
+        # Tolerance (since debounce is 2 mins, timestamps might differ slightly)
+        tolerance = timedelta(seconds=125) 
+        
+        is_check_in = False
+        is_check_out = False
+        
+        if attendance.check_in and abs(attendance.check_in - obj.timestamp) <= tolerance:
+            is_check_in = True
+            
+        if attendance.check_out and abs(attendance.check_out - obj.timestamp) <= tolerance:
+            is_check_out = True
+            
+        if is_check_in:
+            res.append('<span style="color: green; font-weight: bold;">LOGIN (IN)</span>')
+        
+        if is_check_out:
+            # If it's the exact same timestamp, it's a single scan (Just logged in)
+            # Only show OUT if it's different or if it's the last one
+            if not is_check_in or (attendance.check_out != attendance.check_in):
+                res.append('<span style="color: red; font-weight: bold;">LOGOUT (OUT)</span>')
+                
+        if not res:
+            return "Intermediate Scan"
+            
+        return format_html(" / ".join(res))
+    
+    get_scan_type.short_description = "Scan Context"
 
 
 # ============================================

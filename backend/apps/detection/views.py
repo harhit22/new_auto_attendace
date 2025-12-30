@@ -219,6 +219,7 @@ class MultiLoginWithDetectionView(APIView):
     """
     parser_classes = [MultiPartParser]
     permission_classes = [AllowAny]
+    authentication_classes = [] # Disable CSRF for public kiosk
     
     def post(self, request):
         from django.core.files import File
@@ -228,15 +229,19 @@ class MultiLoginWithDetectionView(APIView):
         
         org_code = request.data.get('org_code', '').upper().strip()
         image_file = request.FILES.get('image')
+
+        print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
         
         if not org_code or not image_file:
             return Response({'error': 'org_code and image required'}, status=400)
+        print("yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy")
         
         try:
             org = Organization.objects.get(org_code=org_code, is_active=True)
         except Organization.DoesNotExist:
             return Response({'error': 'Organization not found'}, status=404)
         
+        print("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
         # Save image temporarily
         with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
             for chunk in image_file.chunks():
@@ -245,8 +250,10 @@ class MultiLoginWithDetectionView(APIView):
         
         try:
             # 1. FACE RECOGNITION - Get embedding from image
+            print("x")
             face_service = get_deepface_service()
             query_embedding = face_service.get_embedding(temp_path)
+            print("y")
             
             if query_embedding is None:
                 return Response({
@@ -295,6 +302,8 @@ class MultiLoginWithDetectionView(APIView):
                 organization=org, 
                 is_active=True
             ).first()
+            print("active_yolo", active_yolo)
+            print("YOLO_AVAILABLE", YOLO_AVAILABLE)
             
             if active_yolo and YOLO_AVAILABLE:
                 yolo_model_used = active_yolo
@@ -334,6 +343,7 @@ class MultiLoginWithDetectionView(APIView):
             # --- Attendance Mode Logic ---
             action = request.data.get('action', 'auto') # check_in, check_out, auto
             attendance_status = "marked"
+            print("ssmom")
 
             if org.attendance_mode == 'daily':
                 today = timezone.now().date()
@@ -493,6 +503,7 @@ class LivePreviewView(APIView):
     POST /api/v1/detection/preview/
     """
     permission_classes = [AllowAny]
+    authentication_classes = [] # Disable CSRF for public kiosk
     
     def post(self, request):
         from .yolo_service import get_yolo_service, YOLO_AVAILABLE
@@ -507,43 +518,101 @@ class LivePreviewView(APIView):
         try:
             org = Organization.objects.get(org_code=org_code, is_active=True)
             
+            # --- 1. FACE RECOGNITION (Multi-Face Server-Side) ---
+            face_results_list = []
+            detected_name = None
+            yolo_temp_path = None
+            
+            try:
+                from apps.faces.deepface_service import get_deepface_service
+                from services.vector_db import vector_db
+                face_service = get_deepface_service()
+
+                if 'image' in request.FILES:
+                    # Save main image to temp path
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
+                        for chunk in request.FILES['image'].chunks():
+                            f.write(chunk)
+                        yolo_temp_path = f.name
+                    
+                    # Get ALL faces from the full image
+                    # This uses DeepFace to detect faces in the uncropped image
+                    results = face_service.get_all_embeddings(yolo_temp_path)
+                    
+                    for res in results:
+                         embedding = res.get('embedding')
+                         area = res.get('facial_area')
+                         
+                         name = None
+                         conf = 0.0
+                         
+                         if embedding:
+                             # Match heavy
+                             match = vector_db.find_best_match(org_code, 'heavy', embedding, min_confidence=0.01)
+                             if match:
+                                 _, conf, name = match
+                             else:
+                                 # Match light
+                                 match = vector_db.find_best_match(org_code, 'light', embedding, min_confidence=0.01)
+                                 if match:
+                                     _, conf, name = match
+                         
+                         if name:
+                             face_results_list.append({
+                                 'name': name,
+                                 'confidence': conf,
+                                 'box': area
+                             })
+                             print(f"Match: {name} at {area}")
+
+                    if face_results_list:
+                         detected_name = face_results_list[0]['name']
+
+            except Exception as e:
+                print(f"Preview Face System Error: {e}")
+            
+            # --- 2. YOLO DETECTION ---
             # Helper to get active model
             active_yolo = CustomYoloModel.objects.filter(
                 organization=org, 
                 is_active=True
             ).first()
             
-            if not active_yolo or not YOLO_AVAILABLE:
-                return Response({'boxes': []})
-            
-            # Save temp for YOLO
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as f:
-                for chunk in image_file.chunks():
-                    f.write(chunk)
-                temp_path = f.name
-            
-            try:
-                service = get_yolo_service()
-                model_id = str(active_yolo.id)
-                service.load_model(active_yolo.model_file.path, model_id)
+            boxes = []
+            if active_yolo and YOLO_AVAILABLE:
+                try:
+                    service = get_yolo_service()
+                    model_id = str(active_yolo.id)
+                    service.load_model(active_yolo.model_file.path, model_id)
+                    
+                    # Get detailed detections with boxes
+                    if yolo_temp_path and os.path.exists(yolo_temp_path):
+                        detections = service.detect_with_details(yolo_temp_path, model_id)
+                    else:
+                        detections = []
+                    
+                    # Check which classes are required
+                    required_classes = set(
+                        active_yolo.requirements.filter(is_required=True).values_list('class_name', flat=True)
+                    )
+                    
+                    # Add compliance info to each box
+                    for d in detections:
+                        d['is_required'] = d['class'] in required_classes
+                    
+                    boxes = detections
+                except Exception as e:
+                    print(f"Preview YOLO Error: {e}")
+
+            # Cleanup
+            if yolo_temp_path and os.path.exists(yolo_temp_path):
+                os.unlink(yolo_temp_path)
                 
-                # Get detailed detections with boxes
-                detections = service.detect_with_details(temp_path, model_id)
-                
-                # Check which classes are required
-                required_classes = set(
-                    active_yolo.requirements.filter(is_required=True).values_list('class_name', flat=True)
-                )
-                
-                # Add compliance info to each box
-                for d in detections:
-                    d['is_required'] = d['class'] in required_classes
-                
-                return Response({'boxes': detections})
-                
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+            return Response({
+                'boxes': boxes,
+                'detected_name': detected_name,
+                'face_results': face_results_list
+            })
                     
         except Exception as e:
-            return Response({'boxes': []})
+            return Response({'boxes': [], 'detected_name': None})

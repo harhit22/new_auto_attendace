@@ -14,4 +14,7 @@ module.exports = {
             return webpackConfig;
         },
     },
+    devServer: {
+        allowedHosts: 'all', // Allow all hosts for ngrok tunneling
+    },
 };
