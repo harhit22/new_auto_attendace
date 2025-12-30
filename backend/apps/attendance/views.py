@@ -51,7 +51,9 @@ class OrgLoginView(APIView):
                 'plan': org.plan,
                 'employee_count': org.employee_count,
                 'max_employees': org.max_employees,
-                'recognition_mode': org.recognition_mode  # light or heavy
+                'recognition_mode': org.recognition_mode,  # light or heavy
+                'attendance_mode': org.attendance_mode,
+                'compliance_enforcement': org.compliance_enforcement
             }
         })
 
@@ -121,7 +123,9 @@ class GetOrgSettingsView(APIView):
                 'id': str(org.id),
                 'org_code': org.org_code,
                 'name': org.name,
-                'recognition_mode': org.recognition_mode
+                'recognition_mode': org.recognition_mode,
+                'attendance_mode': org.attendance_mode,
+                'compliance_enforcement': org.compliance_enforcement
             }
         })
 
@@ -411,6 +415,9 @@ class TrainModelView(APIView):
         trained_count = 0
         total_embeddings = 0
         
+        # Import ChromaDB service
+        from services.vector_db import vector_db
+        
         if mode == 'heavy':
             # HEAVY MODE: Re-process images with DeepFace for better accuracy
             from apps.faces.deepface_service import get_deepface_service
@@ -432,7 +439,16 @@ class TrainModelView(APIView):
                             deep_embeddings.append(list(embedding))
                 
                 if len(deep_embeddings) >= 3:
-                    # Store in HEAVY model fields
+                    # Store in ChromaDB for fast similarity search
+                    vector_db.add_embeddings(
+                        org_code=org_code,
+                        model_type='heavy',
+                        employee_id=emp.employee_id,
+                        embeddings=deep_embeddings,
+                        employee_name=emp.full_name
+                    )
+                    
+                    # Update employee status (keep embeddings in MySQL as backup)
                     emp.heavy_embeddings = deep_embeddings
                     emp.heavy_trained = True
                     emp.heavy_trained_at = timezone.now()
@@ -459,7 +475,16 @@ class TrainModelView(APIView):
                 if len(embeddings) < 3:
                     continue
                 
-                # Store in LIGHT model fields (128-d embeddings)
+                # Store in ChromaDB for fast similarity search
+                vector_db.add_embeddings(
+                    org_code=org_code,
+                    model_type='light',
+                    employee_id=emp.employee_id,
+                    embeddings=embeddings,
+                    employee_name=emp.full_name
+                )
+                
+                # Store in LIGHT model fields (128-d embeddings) - keep as backup
                 emp.light_embeddings = embeddings
                 emp.light_trained = True
                 emp.light_trained_at = timezone.now()
@@ -754,23 +779,58 @@ class CheckInView(APIView):
             
             query_embedding = np.array(query_embedding)
             
-            # Find matching employee
-            employees = Employee.objects.filter(organization=org, face_enrolled=True, status='active')
+            # Use ChromaDB for fast vector search
+            from services.vector_db import vector_db
+            
+            # Try heavy model first (512-d), then light model (128-d)
+            match_result = vector_db.find_best_match(
+                org_code=org_code,
+                model_type='heavy',
+                query_embedding=query_embedding.tolist(),
+                min_confidence=0.6
+            )
+            
+            if not match_result:
+                # No match in heavy, this could also be a dimension mismatch - skip light for 512-d
+                pass
             
             best_match = None
-            best_distance = float('inf')
+            best_confidence = 0
             
-            for emp in employees:
-                for stored in (emp.face_embeddings or []):
-                    stored = np.array(stored)
-                    distance = 1 - np.dot(query_embedding, stored) / (
-                        np.linalg.norm(query_embedding) * np.linalg.norm(stored)
+            if match_result:
+                employee_id, confidence, employee_name = match_result
+                try:
+                    best_match = Employee.objects.get(
+                        organization=org, 
+                        employee_id=employee_id, 
+                        status='active'
                     )
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_match = emp
+                    best_confidence = confidence / 100  # Convert to 0-1
+                except Employee.DoesNotExist:
+                    pass
             
-            if best_match is None or best_distance > 0.4:
+            # Fallback to MySQL-based search if ChromaDB fails
+            if best_match is None:
+                employees = Employee.objects.filter(organization=org, face_enrolled=True, status='active')
+                best_distance = float('inf')
+                
+                for emp in employees:
+                    for stored in (emp.face_embeddings or []):
+                        stored = np.array(stored)
+                        if len(stored) != len(query_embedding):
+                            continue  # Skip dimension mismatch
+                        distance = 1 - np.dot(query_embedding, stored) / (
+                            np.linalg.norm(query_embedding) * np.linalg.norm(stored)
+                        )
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_match = emp
+                            best_confidence = 1 - distance
+                
+                if best_distance > 0.4:
+                    best_match = None
+            
+            if best_match is None:
                 return Response({
                     'success': False,
                     'message': 'Face not recognized. Please try again.'
@@ -782,7 +842,7 @@ class CheckInView(APIView):
                 organization=org,
                 employee=best_match,
                 date=today,
-                defaults={'check_in': timezone.now(), 'check_in_confidence': 1 - best_distance}
+                defaults={'check_in': timezone.now(), 'check_in_confidence': best_confidence}
             )
             
             if not created and record.check_in:
@@ -794,7 +854,7 @@ class CheckInView(APIView):
                 })
             
             record.check_in = timezone.now()
-            record.check_in_confidence = 1 - best_distance
+            record.check_in_confidence = best_confidence
             record.save()
             
             return Response({
@@ -802,7 +862,7 @@ class CheckInView(APIView):
                 'employee': best_match.full_name,
                 'employee_id': best_match.employee_id,
                 'check_in_time': record.check_in.strftime('%H:%M'),
-                'confidence': round((1 - best_distance) * 100, 1)
+                'confidence': round(best_confidence * 100, 1)
             })
             
         except Exception as e:
@@ -846,22 +906,53 @@ class CheckOutView(APIView):
             
             query_embedding = np.array(query_embedding)
             
-            employees = Employee.objects.filter(organization=org, face_enrolled=True, status='active')
+            # Use ChromaDB for fast vector search
+            from services.vector_db import vector_db
+            
+            match_result = vector_db.find_best_match(
+                org_code=org_code,
+                model_type='heavy',
+                query_embedding=query_embedding.tolist(),
+                min_confidence=0.6
+            )
             
             best_match = None
-            best_distance = float('inf')
+            best_confidence = 0
             
-            for emp in employees:
-                for stored in (emp.face_embeddings or []):
-                    stored = np.array(stored)
-                    distance = 1 - np.dot(query_embedding, stored) / (
-                        np.linalg.norm(query_embedding) * np.linalg.norm(stored)
+            if match_result:
+                employee_id, confidence, employee_name = match_result
+                try:
+                    best_match = Employee.objects.get(
+                        organization=org, 
+                        employee_id=employee_id, 
+                        status='active'
                     )
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_match = emp
+                    best_confidence = confidence / 100
+                except Employee.DoesNotExist:
+                    pass
             
-            if best_match is None or best_distance > 0.4:
+            # Fallback to MySQL-based search if ChromaDB fails
+            if best_match is None:
+                employees = Employee.objects.filter(organization=org, face_enrolled=True, status='active')
+                best_distance = float('inf')
+                
+                for emp in employees:
+                    for stored in (emp.face_embeddings or []):
+                        stored = np.array(stored)
+                        if len(stored) != len(query_embedding):
+                            continue
+                        distance = 1 - np.dot(query_embedding, stored) / (
+                            np.linalg.norm(query_embedding) * np.linalg.norm(stored)
+                        )
+                        if distance < best_distance:
+                            best_distance = distance
+                            best_match = emp
+                            best_confidence = 1 - distance
+                
+                if best_distance > 0.4:
+                    best_match = None
+            
+            if best_match is None:
                 return Response({'success': False, 'message': 'Face not recognized'}, status=400)
             
             today = date.today()
@@ -871,7 +962,7 @@ class CheckOutView(APIView):
                 return Response({'error': 'No check-in record found for today'}, status=400)
             
             record.check_out = timezone.now()
-            record.check_out_confidence = 1 - best_distance
+            record.check_out_confidence = best_confidence
             record.calculate_work_duration()
             
             return Response({
@@ -1113,14 +1204,18 @@ class EmployeeImagesView(APIView):
 
 class UpdateOrgSettingsView(APIView):
     """
-    Update organization settings (recognition mode, etc.)
+    Update organization settings (recognition mode, attendance mode, compliance)
     POST /api/v1/attendance/update-settings/
     """
     permission_classes = [AllowAny]
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
+        
+        # Get settings from request
         recognition_mode = request.data.get('recognition_mode', '').lower().strip()
+        attendance_mode = request.data.get('attendance_mode', '').lower().strip()
+        compliance_enforcement = request.data.get('compliance_enforcement', '').lower().strip()
         
         if not org_code:
             return Response({'error': 'org_code required'}, status=400)
@@ -1130,15 +1225,32 @@ class UpdateOrgSettingsView(APIView):
         except Organization.DoesNotExist:
             return Response({'error': 'Organization not found'}, status=404)
         
-        # Update settings
+        # Track changes for message
+        changes = []
+
+        # Update Recognition Mode
         if recognition_mode in ['light', 'heavy']:
             org.recognition_mode = recognition_mode
-            org.save()
+            changes.append(f"Recognition: {recognition_mode}")
+            
+        # Update Attendance Mode
+        if attendance_mode in ['daily', 'continuous']:
+            org.attendance_mode = attendance_mode
+            changes.append(f"Mode: {attendance_mode}")
+
+        # Update Compliance Enforcement
+        if compliance_enforcement in ['block', 'report']:
+            org.compliance_enforcement = compliance_enforcement
+            changes.append(f"Compliance: {compliance_enforcement}")
+
+        org.save()
         
         return Response({
             'success': True,
-            'message': f'Recognition mode set to {org.recognition_mode}',
-            'recognition_mode': org.recognition_mode
+            'message': f'Settings updated: {", ".join(changes)}' if changes else 'No changes made',
+            'recognition_mode': org.recognition_mode,
+            'attendance_mode': org.attendance_mode,
+            'compliance_enforcement': org.compliance_enforcement
         })
 
 
@@ -1404,3 +1516,151 @@ class AutoCheckinView(APIView):
                 }
             })
 
+
+class EmployeeFaceCheckinView(APIView):
+    """
+    Employee self check-in with face verification
+    POST /api/v1/attendance/employee-face-checkin/
+    Verifies the employee's face against their stored embeddings
+    """
+    permission_classes = [AllowAny]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        org_code = request.data.get('org_code', '').upper().strip()
+        employee_id = request.data.get('employee_id', '').strip()
+        action = request.data.get('action', 'checkin')  # checkin or checkout
+        image_file = request.FILES.get('image')
+        print(org_code, employee_id, action, image_file)
+
+        if not org_code or not employee_id or not image_file:
+            return Response({'error': 'org_code, employee_id, and image required'}, status=400)
+
+        try:
+            org = Organization.objects.get(org_code=org_code, is_active=True)
+        except Organization.DoesNotExist:
+            return Response({'error': 'Organization not found'}, status=404)
+
+        try:
+            employee = Employee.objects.get(organization=org, employee_id=employee_id, status='active')
+        except Employee.DoesNotExist:
+            return Response({'error': 'Employee not found'}, status=404)
+
+        if not employee.face_enrolled:
+            return Response({'error': 'Face not enrolled. Please enroll your face first.'}, status=400)
+
+        # Get stored embeddings - use face_embeddings (same as kiosk)
+        stored_embeddings = employee.face_embeddings or employee.heavy_embeddings
+        if not stored_embeddings:
+            return Response({'error': 'No face embeddings found. Please train your face model.'}, status=400)
+
+        # Save incoming image temporarily
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as temp_file:
+            for chunk in image_file.chunks():
+                temp_file.write(chunk)
+            temp_path = temp_file.name
+
+        try:
+            # Use same service as kiosk for consistency
+            from apps.faces.deepface_service import get_deepface_service
+            service = get_deepface_service()
+            
+            query_embedding = service.get_embedding(temp_path)
+            
+            if query_embedding is None:
+                return Response({'error': 'No face detected in image'}, status=400)
+            
+            query_embedding = np.array(query_embedding)
+            print(f"[DEBUG] Query embedding size: {len(query_embedding)}")
+
+            # Compare using COSINE SIMILARITY (same as kiosk CheckInView)
+            best_distance = float('inf')
+            embedding_count = len(stored_embeddings)
+            print(f"[DEBUG] Stored embeddings count: {embedding_count}")
+            
+            for stored in stored_embeddings:
+                stored_arr = np.array(stored)
+                # Cosine distance: 1 - cosine_similarity
+                dot_product = np.dot(query_embedding, stored_arr)
+                norm_product = np.linalg.norm(query_embedding) * np.linalg.norm(stored_arr)
+                if norm_product > 0:
+                    distance = 1 - (dot_product / norm_product)
+                    if distance < best_distance:
+                        best_distance = distance
+            
+            print(f"[DEBUG] Best cosine distance: {best_distance}")
+
+            # Same threshold as kiosk (0.4)
+            THRESHOLD = 0.4
+            if best_distance > THRESHOLD or best_distance == float('inf'):
+                print(f"[FAIL] Face verification failed! distance={best_distance}, threshold={THRESHOLD}")
+                return Response({
+                    'success': False,
+                    'error': f'Face verification failed (distance: {best_distance:.3f}). Try better lighting.',
+                    'distance': round(best_distance, 3) if best_distance != float('inf') else None
+                }, status=401)
+
+            # Face verified! Now do check-in/checkout
+            now = timezone.now()
+            today = now.date()
+
+            existing = AttendanceRecord.objects.filter(
+                employee=employee,
+                organization=org,
+                check_in__date=today
+            ).first()
+
+            if action == 'checkin':
+                if existing:
+                    return Response({
+                        'success': False,
+                        'error': f'Already checked in at {existing.check_in.strftime("%H:%M")}'
+                    })
+
+                AttendanceRecord.objects.create(
+                    employee=employee,
+                    organization=org,
+                    check_in=now,
+                    confidence=round((1 - best_distance) * 100, 1),
+                    verification_method='face_employee_dashboard'
+                )
+
+                return Response({
+                    'success': True,
+                    'message': f'Checked in at {now.strftime("%H:%M")}!',
+                    'time': now.isoformat()
+                })
+            else:
+                # Check-out
+                if not existing:
+                    return Response({
+                        'success': False,
+                        'error': 'Not checked in today. Please check in first.'
+                    })
+
+                if existing.check_out:
+                    return Response({
+                        'success': False,
+                        'error': f'Already checked out at {existing.check_out.strftime("%H:%M")}'
+                    })
+
+                existing.check_out = now
+                existing.save()
+
+                work_hours = (now - existing.check_in).total_seconds() / 3600
+
+                return Response({
+                    'success': True,
+                    'message': f'Checked out at {now.strftime("%H:%M")}! Worked {work_hours:.1f} hours.',
+                    'time': now.isoformat(),
+                    'work_hours': round(work_hours, 2)
+                })
+
+        except Exception as e:
+            return Response({'error': f'Face verification error: {str(e)}'}, status=500)
+        finally:
+            # Clean up temp file
+            import os
+            if os.path.exists(temp_path):
+                os.remove(temp_path)

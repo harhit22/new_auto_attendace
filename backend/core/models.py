@@ -96,6 +96,20 @@ class Organization(models.Model):
         choices=[('light', 'Light (Quick)'), ('heavy', 'Heavy (DeepFace)')],
         help_text="Which model to use for kiosk face recognition"
     )
+
+    # New Flexible Configuration Fields
+    attendance_mode = models.CharField(
+        max_length=20,
+        default='daily',
+        choices=[('daily', 'Daily (First In/Last Out)'), ('continuous', 'Continuous (Log Every Scan)')],
+        help_text="How attendance is calculated and stored"
+    )
+    compliance_enforcement = models.CharField(
+        max_length=20,
+        default='report',
+        choices=[('block', 'Block Entry on Failure'), ('report', 'Allow & Report Failure')],
+        help_text="Action to take when object detection rules (helmet/vest) fail"
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -265,3 +279,109 @@ class SaaSAttendance(models.Model):
         if self.check_in and self.check_out:
             self.work_duration = self.check_out - self.check_in
             self.save(update_fields=['work_duration', 'updated_at'])
+
+
+# =============================================================================
+# Custom YOLO Detection Models
+# =============================================================================
+
+def yolo_model_upload_path(instance, filename):
+    """Generate unique path: yolo_models/{org_code}/{uuid}_{filename}"""
+    import uuid as uuid_lib
+    unique_id = str(uuid_lib.uuid4())[:8]
+    org_code = instance.organization.org_code if instance.organization else 'unknown'
+    return f'yolo_models/{org_code}/{unique_id}_{filename}'
+
+
+class CustomYoloModel(models.Model):
+    """
+    Admin-uploaded YOLO model for custom object detection.
+    Admin can name it anything and configure which classes are required.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='yolo_models'
+    )
+    name = models.CharField(max_length=200, help_text="Admin-defined name for this model")
+    description = models.TextField(blank=True)
+    model_file = models.FileField(upload_to=yolo_model_upload_path, help_text=".pt YOLO model file")
+    classes = models.JSONField(default=list, help_text="Classes this model can detect")
+    is_active = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'custom_yolo_models'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.name} ({self.organization.org_code})"
+
+
+class DetectionRequirement(models.Model):
+    """
+    Defines which YOLO classes are required/optional for an organization.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    yolo_model = models.ForeignKey(
+        CustomYoloModel,
+        on_delete=models.CASCADE,
+        related_name='requirements'
+    )
+    class_name = models.CharField(max_length=100, help_text="Name of the class to detect")
+    display_name = models.CharField(max_length=200, blank=True, help_text="Human-readable name")
+    is_required = models.BooleanField(default=False, help_text="If true, login fails without this object")
+    
+    class Meta:
+        db_table = 'detection_requirements'
+        unique_together = ['yolo_model', 'class_name']
+    
+    def __str__(self):
+        req = "Required" if self.is_required else "Optional"
+        return f"{self.class_name} ({req})"
+
+
+class LoginDetectionResult(models.Model):
+    """
+    Records what was detected during each login attempt.
+    Links face recognition with object detection results.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='detection_results'
+    )
+    employee = models.ForeignKey(
+        SaaSEmployee,
+        on_delete=models.CASCADE,
+        related_name='detection_results'
+    )
+    yolo_model = models.ForeignKey(
+        CustomYoloModel,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='detection_results'
+    )
+    
+    # Detection results
+    timestamp = models.DateTimeField(auto_now_add=True)
+    face_confidence = models.FloatField(help_text="Face recognition confidence 0-1")
+    detections = models.JSONField(default=dict, help_text='{"helmet": true, "vest": false}')
+    compliance_passed = models.BooleanField(default=True)
+    
+    # Optional: store the frame for audit
+    frame_image = models.ImageField(upload_to='login_frames/', null=True, blank=True)
+    
+    class Meta:
+        db_table = 'login_detection_results'
+        ordering = ['-timestamp']
+    
+    def __str__(self):
+        status = "✅" if self.compliance_passed else "❌"
+        return f"{self.employee.full_name} - {status} - {self.timestamp.strftime('%Y-%m-%d %H:%M')}"
+

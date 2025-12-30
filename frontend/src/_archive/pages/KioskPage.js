@@ -354,6 +354,25 @@ const KioskPage = () => {
                     }}>
                         🔓 Access Terminal
                     </button>
+
+                    <div style={{
+                        marginTop: '20px', paddingTop: '20px',
+                        borderTop: '1px solid rgba(255,255,255,0.1)', textAlign: 'center'
+                    }}>
+                        <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.85rem', marginBottom: '10px' }}>
+                            Are you an employee?
+                        </p>
+                        <a href="/employee/login" style={{
+                            display: 'inline-flex', alignItems: 'center', gap: '6px',
+                            padding: '10px 20px', borderRadius: '8px',
+                            background: 'rgba(255,255,255,0.05)',
+                            border: '1px solid rgba(255,255,255,0.1)',
+                            color: '#60a5fa', fontSize: '0.9rem', fontWeight: '500',
+                            textDecoration: 'none', cursor: 'pointer'
+                        }}>
+                            👤 Login as Employee
+                        </a>
+                    </div>
                 </div>
             </div>
         );
@@ -388,10 +407,18 @@ const KioskPage = () => {
                 <div style={{ color: 'white', fontSize: '1.5rem', fontWeight: '700', fontFamily: 'monospace' }}>
                     {currentTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
                 </div>
-                <button onClick={handleLogout} style={{
-                    background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
-                    padding: '8px 16px', borderRadius: '8px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer'
-                }}>🔒</button>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                    <a href="/employee/login" style={{
+                        background: 'rgba(96, 165, 250, 0.1)', border: '1px solid rgba(96, 165, 250, 0.3)',
+                        padding: '8px 14px', borderRadius: '8px', color: '#60a5fa', cursor: 'pointer',
+                        textDecoration: 'none', fontSize: '0.8rem', fontWeight: '500',
+                        display: 'flex', alignItems: 'center', gap: '4px'
+                    }}>👤 Employee Login</a>
+                    <button onClick={handleLogout} style={{
+                        background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)',
+                        padding: '8px 16px', borderRadius: '8px', color: 'rgba(255,255,255,0.7)', cursor: 'pointer'
+                    }}>🔒</button>
+                </div>
             </div>
 
             {/* Main */}

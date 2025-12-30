@@ -13,7 +13,8 @@ from .views import (
     AttendanceRecordViewSet, EmployeeViewSet, OrganizationViewSet,
     EnrollFaceView, EmployeeImagesView,
     UpdateOrgSettingsView, TrainSingleEmployeeView,
-    GetEmployeeEmbeddingsView, AutoCheckinView
+    GetEmployeeEmbeddingsView, AutoCheckinView,
+    EmployeeFaceCheckinView
 )
 
 router = DefaultRouter()
@@ -29,6 +30,7 @@ urlpatterns = [
     # Employee individual login
     path('employee-login/', EmployeeLoginView.as_view(), name='employee-login'),
     path('employee-dashboard/', EmployeeDashboardView.as_view(), name='employee-dashboard'),
+    path('employee-face-checkin/', EmployeeFaceCheckinView.as_view(), name='employee-face-checkin'),
     
     # Employee captures images (no waiting)
     path('capture-images/', CaptureImagesView.as_view(), name='capture-images'),

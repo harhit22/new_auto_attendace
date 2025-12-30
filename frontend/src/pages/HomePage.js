@@ -62,9 +62,8 @@ const HomePage = () => {
                     <span className="logo-text">FaceAI</span>
                 </div>
                 <div className="nav-links">
-                    <Link to="/trainer/login" className="nav-item">Trainer</Link>
-                    <Link to="/attendance/login" className="nav-item">Business</Link>
-                    <Link to="/kiosk" className="nav-item">Terminal</Link>
+                    <Link to="/attendance/login" className="nav-item">Admin</Link>
+                    <Link to="/employee/login" className="nav-item">Employee</Link>
                 </div>
             </nav>
 

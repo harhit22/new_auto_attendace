@@ -1,17 +1,27 @@
 /**
  * Employee Dashboard Page
- * Shows employee's attendance history, today's status, and enrollment options
+ * Shows employee's attendance history, today's status, face check-in, and enrollment options
  */
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import Webcam from 'react-webcam';
+import * as faceapi from 'face-api.js';
 
 const API_BASE = 'http://localhost:8000/api/v1/attendance';
 
 const EmployeeDashboard = () => {
     const navigate = useNavigate();
+    const webcamRef = useRef(null);
     const [employee, setEmployee] = useState(null);
     const [dashboard, setDashboard] = useState(null);
     const [isLoading, setIsLoading] = useState(true);
+
+    // Face check-in state
+    const [showCheckin, setShowCheckin] = useState(false);
+    const [modelsLoaded, setModelsLoaded] = useState(false);
+    const [checkinStatus, setCheckinStatus] = useState('');
+    const [isVerifying, setIsVerifying] = useState(false);
+    const [checkinAction, setCheckinAction] = useState('checkin');
 
     useEffect(() => {
         const storedEmployee = sessionStorage.getItem('employee');
@@ -24,6 +34,24 @@ const EmployeeDashboard = () => {
         setEmployee(emp);
         loadDashboard(emp);
     }, []);
+
+    // Load face-api models
+    useEffect(() => {
+        const loadModels = async () => {
+            try {
+                const MODEL_URL = '/models';
+                await Promise.all([
+                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+                    faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
+                ]);
+                setModelsLoaded(true);
+            } catch (e) {
+                console.error('Failed to load face models:', e);
+            }
+        };
+        if (showCheckin) loadModels();
+    }, [showCheckin]);
 
     const loadDashboard = async (emp) => {
         setIsLoading(true);
@@ -44,6 +72,72 @@ const EmployeeDashboard = () => {
     const logout = () => {
         sessionStorage.removeItem('employee');
         navigate('/employee/login');
+    };
+
+    // Face verification and check-in
+    const verifyAndCheckin = async () => {
+        if (!webcamRef.current || !modelsLoaded || isVerifying) return;
+
+        setIsVerifying(true);
+        setCheckinStatus('🔍 Detecting face...');
+
+        try {
+            const screenshot = webcamRef.current.getScreenshot();
+            if (!screenshot) {
+                setCheckinStatus('❌ Could not capture image');
+                setIsVerifying(false);
+                return;
+            }
+
+            // Detect face using face-api.js
+            const imgElement = document.createElement('img');
+            imgElement.src = screenshot;
+            await new Promise(r => imgElement.onload = r);
+
+            const detection = await faceapi
+                .detectSingleFace(imgElement, new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 }))
+                .withFaceLandmarks()
+                .withFaceDescriptor();
+
+            if (!detection) {
+                setCheckinStatus('⚠️ No face detected. Please look at the camera.');
+                setIsVerifying(false);
+                return;
+            }
+
+            setCheckinStatus('✅ Face detected! Verifying...');
+
+            // Send to backend for verification and check-in
+            const formData = new FormData();
+            const blob = await (await fetch(screenshot)).blob();
+            formData.append('image', blob, 'face.jpg');
+            formData.append('org_code', employee.org_code);
+            formData.append('employee_id', employee.employee_id);
+            formData.append('action', checkinAction);
+
+            const res = await fetch(`${API_BASE}/employee-face-checkin/`, {
+                method: 'POST',
+                body: formData
+            });
+
+            const data = await res.json();
+
+            if (res.ok && data.success) {
+                setCheckinStatus(`🎉 ${data.message}`);
+                // Reload dashboard to show new status
+                setTimeout(() => {
+                    loadDashboard(employee);
+                    setShowCheckin(false);
+                }, 2000);
+            } else {
+                setCheckinStatus(`❌ ${data.error || 'Verification failed'}`);
+            }
+        } catch (e) {
+            console.error(e);
+            setCheckinStatus('❌ Error during verification');
+        }
+
+        setIsVerifying(false);
     };
 
     if (isLoading || !employee) {
@@ -97,6 +191,103 @@ const EmployeeDashboard = () => {
 
             {/* Content */}
             <div style={{ maxWidth: '800px', margin: '0 auto', padding: '20px' }}>
+
+                {/* Face Check-in Card */}
+                <div className="card" style={{ padding: '24px', marginBottom: '20px' }}>
+                    <h3 style={{ marginBottom: '16px' }}>📷 Face Check-In</h3>
+
+                    {!showCheckin ? (
+                        <div style={{
+                            display: 'flex', gap: '12px', flexWrap: 'wrap',
+                            justifyContent: 'center', padding: '20px 0'
+                        }}>
+                            <button
+                                onClick={() => { setCheckinAction('checkin'); setShowCheckin(true); setCheckinStatus(''); }}
+                                className="btn btn-primary btn-lg"
+                                disabled={!employee.face_enrolled}
+                                style={{ minWidth: '140px' }}
+                            >
+                                📥 Check In
+                            </button>
+                            <button
+                                onClick={() => { setCheckinAction('checkout'); setShowCheckin(true); setCheckinStatus(''); }}
+                                className="btn btn-success btn-lg"
+                                disabled={!employee.face_enrolled}
+                                style={{ minWidth: '140px', background: '#f59e0b' }}
+                            >
+                                📤 Check Out
+                            </button>
+                            {!employee.face_enrolled && (
+                                <p style={{ width: '100%', textAlign: 'center', color: 'var(--warning)', marginTop: '12px' }}>
+                                    ⚠️ Please enroll your face first to use face check-in
+                                </p>
+                            )}
+                        </div>
+                    ) : (
+                        <div>
+                            {/* Webcam */}
+                            <div style={{ borderRadius: '16px', overflow: 'hidden', marginBottom: '16px', position: 'relative' }}>
+                                <Webcam
+                                    ref={webcamRef}
+                                    audio={false}
+                                    screenshotFormat="image/jpeg"
+                                    screenshotQuality={0.8}
+                                    videoConstraints={{ width: 480, height: 360, facingMode: 'user' }}
+                                    style={{ width: '100%', display: 'block' }}
+                                    mirrored={true}
+                                />
+                                {/* Overlay */}
+                                <div style={{
+                                    position: 'absolute', top: '50%', left: '50%',
+                                    transform: 'translate(-50%, -50%)',
+                                    width: '150px', height: '180px',
+                                    border: '3px dashed rgba(255,255,255,0.5)',
+                                    borderRadius: '50%'
+                                }}></div>
+                                <div style={{
+                                    position: 'absolute', top: '10px', right: '10px',
+                                    background: checkinAction === 'checkin' ? '#22c55e' : '#f59e0b',
+                                    color: 'white', padding: '6px 14px', borderRadius: '50px',
+                                    fontSize: '0.85rem', fontWeight: '600'
+                                }}>
+                                    {checkinAction === 'checkin' ? '📥 CHECK IN' : '📤 CHECK OUT'}
+                                </div>
+                            </div>
+
+                            {/* Status */}
+                            {checkinStatus && (
+                                <div style={{
+                                    padding: '12px', textAlign: 'center', marginBottom: '16px',
+                                    background: checkinStatus.includes('🎉') ? 'rgba(34, 197, 94, 0.1)' :
+                                        checkinStatus.includes('❌') || checkinStatus.includes('⚠️') ? 'rgba(239, 68, 68, 0.1)' :
+                                            'rgba(59, 130, 246, 0.1)',
+                                    borderRadius: '10px', fontSize: '1rem'
+                                }}>
+                                    {checkinStatus}
+                                </div>
+                            )}
+
+                            {/* Buttons */}
+                            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+                                <button
+                                    onClick={verifyAndCheckin}
+                                    disabled={!modelsLoaded || isVerifying}
+                                    className="btn btn-primary btn-lg"
+                                    style={{ minWidth: '180px' }}
+                                >
+                                    {isVerifying ? '⏳ Verifying...' : modelsLoaded ? '✅ Verify & Submit' : '⏳ Loading...'}
+                                </button>
+                                <button
+                                    onClick={() => { setShowCheckin(false); setCheckinStatus(''); }}
+                                    className="btn btn-outline"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
                 {/* Today's Status */}
                 <div className="card" style={{ padding: '24px', marginBottom: '20px' }}>
                     <h3 style={{ marginBottom: '16px' }}>📅 Today's Status</h3>
