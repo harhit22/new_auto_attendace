@@ -64,6 +64,7 @@ const HomePage = () => {
                 <div className="nav-links">
                     <Link to="/attendance/login" className="nav-item">Admin</Link>
                     <Link to="/employee/login" className="nav-item">Employee</Link>
+                    <Link to="/multi-login" className="nav-item">Login</Link>
                 </div>
             </nav>
 

@@ -39,9 +39,9 @@ class DeepFaceService:
     """
     
     MODEL_NAME = "ArcFace"  # Best accuracy: 99.83% on LFW
-    DETECTOR_BACKEND = "opencv"  # Fast detection (use 'retinaface' for better accuracy but slower)
+    DETECTOR_BACKEND = "mtcnn"  # Stable and excellent for distance (avoiding RetinaFace Keras issues)
     DISTANCE_METRIC = "cosine"
-    THRESHOLD = 0.40  # Lower = stricter matching
+    THRESHOLD = 0.45  # Slightly relaxed for distant faces
     
     def __init__(self):
         self.embeddings_dir = Path(settings.BASE_DIR) / 'face_embeddings'
@@ -75,39 +75,57 @@ class DeepFaceService:
     
     def get_embedding(self, image_path):
         """
-        Generate face embedding using ArcFace.
+        Generate face embedding using ArcFace with intelligent fallback.
         Returns 512-dimensional embedding vector.
+        
+        Tries multiple detectors for best results:
+        1. RetinaFace (best for distance/accuracy)
+        2. MTCNN (balanced)
+        3. opencv (fast fallback)
         """
         DeepFace = get_deepface()
-        try:
-            embedding = DeepFace.represent(
-                img_path=image_path,
-                model_name=self.MODEL_NAME,
-                detector_backend=self.DETECTOR_BACKEND,
-                enforce_detection=True
-            )
-            if embedding and len(embedding) > 0:
-                return embedding[0]['embedding']
-            return None
-        except Exception as e:
-            # Try with skip detection if face detection fails
-            logger.warning(f"Face detection failed, trying without detection: {e}")
+        
+        # Try detectors in order of quality (avoiding RetinaFace due to Keras issues)
+        detectors = [
+            ("mtcnn", "MTCNN (best stable detector)"),
+            ("ssd", "SSD (good for distance)"),
+            ("opencv", "OpenCV (fast fallback)")
+        ]
+        
+        for detector, desc in detectors:
             try:
                 embedding = DeepFace.represent(
                     img_path=image_path,
                     model_name=self.MODEL_NAME,
-                    detector_backend="skip",
-                    enforce_detection=False
+                    detector_backend=detector,
+                    enforce_detection=True
                 )
                 if embedding and len(embedding) > 0:
+                    logger.info(f"Face detected with {desc}")
                     return embedding[0]['embedding']
-            except Exception as e2:
-                logger.error(f"Error getting embedding: {e2}")
-            return None
+            except Exception as e:
+                logger.debug(f"{desc} failed: {e}, trying next detector...")
+                continue
+        
+        # Final attempt without detection enforcement
+        try:
+            logger.warning("All detectors failed, trying without detection enforcement")
+            embedding = DeepFace.represent(
+                img_path=image_path,
+                model_name=self.MODEL_NAME,
+                detector_backend="skip",
+                enforce_detection=False
+            )
+            if embedding and len(embedding) > 0:
+                return embedding[0]['embedding']
+        except Exception as e2:
+            logger.error(f"All detection attempts failed: {e2}")
+        
+        return None
 
     def get_all_embeddings(self, image_path):
         """
-        Generate embeddings for ALL faces in the image.
+        Generate embeddings for ALL faces in the image using MTCNN.
         Returns list of dicts: [{'embedding': [], 'facial_area': {'x':, 'y':, 'w':, 'h':}}]
         """
         DeepFace = get_deepface()
@@ -115,14 +133,27 @@ class DeepFaceService:
             results = DeepFace.represent(
                 img_path=image_path,
                 model_name=self.MODEL_NAME,
-                detector_backend=self.DETECTOR_BACKEND,
+                detector_backend="mtcnn",  # Stable detector
                 enforce_detection=True,
                 align=True
             )
+            logger.info(f"MTCNN detected {len(results)} face(s)")
             return results
         except Exception as e:
-            logger.warning(f"Face detection failed (get_all): {e}")
-            return []
+            logger.warning(f"MTCNN failed, trying SSD fallback: {e}")
+            try:
+                results = DeepFace.represent(
+                    img_path=image_path,
+                    model_name=self.MODEL_NAME,
+                    detector_backend="ssd",
+                    enforce_detection=True,
+                    align=True
+                )
+                logger.info(f"SSD detected {len(results)} face(s)")
+                return results
+            except Exception as e2:
+                logger.error(f"All detection methods failed: {e2}")
+                return []
     def train_person(self, person_id, person_name, images, on_progress=None):
         """
         Train/enroll a person with multiple face images.

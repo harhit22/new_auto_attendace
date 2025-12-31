@@ -51,8 +51,8 @@ const MultiLoginPage = () => {
     useEffect(() => {
         const loadSetup = async () => {
             try {
-                // Load Face Models
-                await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
+                // Load Face Models - SsdMobilenetv1 for long-range detection
+                await faceapi.nets.ssdMobilenetv1.loadFromUri('/models');
                 setModelsLoaded(true);
 
                 // Fetch Active YOLO Requirements
@@ -84,10 +84,10 @@ const MultiLoginPage = () => {
             const video = webcamRef.current.video;
             if (!video || video.readyState !== 4) return;
 
-            // Draw Face Box (Client Side)
+            // Draw Face Box (Client Side) - SsdMobilenetv1 for distance
             const detections = await faceapi.detectAllFaces(
                 video,
-                new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 })
+                new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }) // Better for distance
             );
 
             // Sort by X (left to right) to match preview loop indices

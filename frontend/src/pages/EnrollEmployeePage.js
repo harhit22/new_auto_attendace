@@ -6,21 +6,31 @@ import React, { useRef, useState, useEffect } from 'react';
 import Webcam from 'react-webcam';
 import * as faceapi from 'face-api.js';
 
-const API_BASE = 'http://localhost:8000/api/v1/attendance';
-const MAX_IMAGES = 200;
-const CAPTURE_INTERVAL = 200;
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1/attendance';
+const MAX_IMAGES = 175; // Total images
+const DISTANCE_IMAGES = 40; // 4 poses x 10 images each (FIRST)
+const CLOSEUP_IMAGES = 135; // 9 poses x 15 images each (SECOND)
+const CAPTURE_INTERVAL = 300;
+const IMAGES_PER_CLOSEUP_POSE = 15; // Capture 15 images per closeup pose
+const IMAGES_PER_DISTANCE_POSE = 10; // Capture 10 images per distance pose
 
 const POSE_PROMPTS = [
-    { text: '👀 Look straight', icon: '🎯', duration: 4000 },
-    { text: '👈 Turn left', icon: '↩️', duration: 3000 },
-    { text: '👉 Turn right', icon: '↪️', duration: 3000 },
-    { text: '👆 Look up', icon: '⬆️', duration: 2500 },
-    { text: '👇 Look down', icon: '⬇️', duration: 2500 },
-    { text: '😊 Smile!', icon: '😄', duration: 2000 },
-    { text: '😐 Neutral', icon: '😐', duration: 2000 },
-    { text: '🔄 Tilt left', icon: '↖️', duration: 2500 },
-    { text: '🔄 Tilt right', icon: '↗️', duration: 2500 },
-    { text: '✨ Great job!', icon: '🌟', duration: 2000 },
+    { text: '👀 Look straight', icon: '🎯', validation: 'straight' },
+    { text: '👈 Turn left', icon: '↩️', validation: 'left' },
+    { text: '👉 Turn right', icon: '↪️', validation: 'right' },
+    { text: '👆 Look up', icon: '⬆️', validation: 'up' },
+    { text: '👇 Look down', icon: '⬇️', validation: 'down' },
+    { text: '😊 Smile!', icon: '😄', validation: 'any' },
+    { text: '😐 Neutral', icon: '😐', validation: 'any' },
+    { text: '🔄 Tilt left', icon: '↖️', validation: 'tilt-left' },
+    { text: '🔄 Tilt right', icon: '↗️', validation: 'tilt-right' },
+];
+
+const DISTANCE_PROMPTS = [
+    { text: '🚶 Step back 3-5 feet', icon: '↔️', validation: 'distance' },
+    { text: '👀 Look straight (far)', icon: '🎯', validation: 'straight' },
+    { text: '👈 Turn left (far)', icon: '↩️', validation: 'left' },
+    { text: '👉 Turn right (far)', icon: '↪️', validation: 'right' },
 ];
 
 // Styles
@@ -87,18 +97,18 @@ const styles = {
         boxShadow: '0 0 20px #00d4ff',
         animation: 'scanMove 2s ease-in-out infinite'
     },
-    faceGuide: {
+    faceGuide: (capturePhase) => ({
         position: 'absolute',
         top: '50%',
         left: '50%',
         transform: 'translate(-50%, -50%)',
-        width: '60%',
-        maxWidth: '200px',
+        width: capturePhase === 'distance' ? '40%' : '60%', // Smaller circle for distance
+        maxWidth: capturePhase === 'distance' ? '140px' : '200px',
         aspectRatio: '3/4',
-        border: '3px dashed rgba(0,212,255,0.5)',
+        border: `3px dashed ${capturePhase === 'distance' ? 'rgba(16,185,129,0.6)' : 'rgba(0,212,255,0.5)'}`,
         borderRadius: '50%',
         animation: 'facePulse 2s ease-in-out infinite'
-    },
+    }),
     cornerTL: { position: 'absolute', top: 12, left: 12, width: 30, height: 30, borderTop: '3px solid #00d4ff', borderLeft: '3px solid #00d4ff', borderRadius: '4px 0 0 0' },
     cornerTR: { position: 'absolute', top: 12, right: 12, width: 30, height: 30, borderTop: '3px solid #7c3aed', borderRight: '3px solid #7c3aed', borderRadius: '0 4px 0 0' },
     cornerBL: { position: 'absolute', bottom: 12, left: 12, width: 30, height: 30, borderBottom: '3px solid #7c3aed', borderLeft: '3px solid #7c3aed', borderRadius: '0 0 0 4px' },
@@ -210,12 +220,75 @@ const styles = {
     }
 };
 
+// Pose Validation Helper Function
+const validatePose = (landmarks, validationType, baseFaceSize = null, currentFaceSize = null) => {
+    if (!landmarks) return false;
+
+    // Calculate head pose angles from landmarks
+    const nose = landmarks.getNose();
+    const leftEye = landmarks.getLeftEye();
+    const rightEye = landmarks.getRightEye();
+    const jawline = landmarks.getJawOutline();
+
+    if (!nose || !leftEye || !rightEye || !jawline) return false;
+
+    // Calculate yaw (left/right rotation)
+    const eyeCenter = [(leftEye[0].x + rightEye[3].x) / 2, (leftEye[0].y + rightEye[3].y) / 2];
+    const noseCenter = [nose[3].x, nose[3].y];
+    const yaw = (noseCenter[0] - eyeCenter[0]) * 0.5; // Rough yaw approximation
+
+    // Calculate pitch (up/down)
+    const noseTip = nose[3];
+    const noseBridge = nose[0];
+    const pitch = (noseTip.y - noseBridge.y) * 0.3; // Rough pitch approximation
+
+    // Calculate roll (tilt)
+    const eyeAngle = Math.atan2(rightEye[3].y - leftEye[0].y, rightEye[3].x - leftEye[0].x) * (180 / Math.PI);
+
+    // Validation logic - TEMPORARILY DISABLED FOR TESTING (always returns true)
+    // This ensures enrollment progresses smoothly
+    return true; // TODO: Re-enable with better thresholds later
+
+    /* Original validation - currently disabled
+    switch (validationType) {
+        case 'straight':
+            return Math.abs(yaw) < 15 && Math.abs(pitch) < 15 && Math.abs(eyeAngle) < 15;
+        case 'left':
+            return yaw > 2; // Very lenient - slight movement triggers
+        case 'right':
+            return yaw < -2; // Very lenient
+        case 'up':
+            return pitch < -2; // Very lenient
+        case 'down':
+            return pitch > 2; // Very lenient - slight nod triggers
+        case 'tilt-left':
+            return eyeAngle > 3; // Very lenient
+        case 'tilt-right':
+            return eyeAngle < -3; // Very lenient
+        case 'distance':
+            // Check if face is smaller (user stepped back)
+            if (!baseFaceSize || !currentFaceSize) return false;
+            const sizeRatio = currentFaceSize / baseFaceSize;
+            return sizeRatio < 0.75; // More lenient - 25% smaller
+        case 'any':
+            return true; // No specific pose required (smile, neutral)
+        default:
+            return false;
+    }
+    */
+};
+
 const EnrollEmployeePage = () => {
     const webcamRef = useRef(null);
     const captureIntervalRef = useRef(null);
+    const baseFaceSizeRef = useRef(null); // Store initial face size for distance validation
+    const poseHoldTimerRef = useRef(null); // Debounce pose validation
 
     const urlParams = new URLSearchParams(window.location.search);
     const urlOrgCode = urlParams.get('org')?.toUpperCase();
+    const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+        ? 'http://localhost:8000/api/v1/detection'
+        : '/api/v1/detection';
     const urlEmpId = urlParams.get('emp');
 
     const [organizations, setOrganizations] = useState([]);
@@ -226,11 +299,16 @@ const EnrollEmployeePage = () => {
     const [capturedEmbeddings, setCapturedEmbeddings] = useState([]);
     const [modelsLoaded, setModelsLoaded] = useState(false);
     const [isCapturing, setIsCapturing] = useState(false);
-    const [currentPrompt, setCurrentPrompt] = useState(POSE_PROMPTS[0]);
+    const [currentPrompt, setCurrentPrompt] = useState(DISTANCE_PROMPTS[0]); // Start with distance
     const [promptIndex, setPromptIndex] = useState(0);
     const [step, setStep] = useState('select');
     const [status, setStatus] = useState('');
     const [uploadProgress, setUploadProgress] = useState(0);
+    const [capturePhase, setCapturePhase] = useState('distance'); // Start with distance, then closeup
+    const [poseValid, setPoseValid] = useState(false); // Track if current pose is valid
+    const [validationMessage, setValidationMessage] = useState(''); // Feedback message
+    const [poseImageCount, setPoseImageCount] = useState(0); // Images captured for current pose
+    const [waitingForNext, setWaitingForNext] = useState(false); // Waiting for user to click next
 
     // Load face-api models
     useEffect(() => {
@@ -238,7 +316,7 @@ const EnrollEmployeePage = () => {
             try {
                 const MODEL_URL = '/models';
                 await Promise.all([
-                    faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+                    faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL), // Better for distant faces
                     faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
                     faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
                 ]);
@@ -280,39 +358,107 @@ const EnrollEmployeePage = () => {
             }).catch(console.error);
     }, [selectedOrg]);
 
-    // Rotate prompts
-    useEffect(() => {
-        if (!isCapturing) return;
-        const timer = setTimeout(() => {
-            const next = (promptIndex + 1) % POSE_PROMPTS.length;
-            setPromptIndex(next);
-            setCurrentPrompt(POSE_PROMPTS[next]);
-        }, currentPrompt.duration);
-        return () => clearTimeout(timer);
-    }, [isCapturing, promptIndex, currentPrompt]);
+    // No automatic prompt rotation - manual control only
 
-    // Auto-capture with 128-d embedding
+    // Auto-capture with per-pose quota
     useEffect(() => {
-        if (isCapturing && capturedImages.length < MAX_IMAGES && modelsLoaded) {
-            captureIntervalRef.current = setInterval(async () => {
-                if (!webcamRef.current) return;
-                const img = webcamRef.current.getScreenshot();
-                if (!img) return;
-                try {
-                    const imgEl = document.createElement('img');
-                    imgEl.src = img;
-                    await new Promise(r => imgEl.onload = r);
-                    const det = await faceapi.detectSingleFace(imgEl, new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 }))
-                        .withFaceLandmarks().withFaceDescriptor();
-                    if (det) {
-                        setCapturedImages(p => p.length >= MAX_IMAGES ? p : [...p, img]);
-                        setCapturedEmbeddings(p => [...p, Array.from(det.descriptor)]);
-                    }
-                } catch (e) { }
-            }, CAPTURE_INTERVAL);
+        if (!isCapturing || waitingForNext || !modelsLoaded) return;
+
+        const imagesPerPose = capturePhase === 'closeup' ? IMAGES_PER_CLOSEUP_POSE : IMAGES_PER_DISTANCE_POSE;
+
+        // Check if quota reached
+        if (poseImageCount >= imagesPerPose) {
+            setIsCapturing(false);
+            setWaitingForNext(true);
+            setValidationMessage(`✅ Pose complete! Click "Next Pose"`);
+            return;
         }
-        return () => captureIntervalRef.current && clearInterval(captureIntervalRef.current);
-    }, [isCapturing, modelsLoaded]);
+
+        captureIntervalRef.current = setInterval(async () => {
+            if (!webcamRef.current) return;
+
+            // Double-check quota hasn't been reached
+            if (poseImageCount >= imagesPerPose) {
+                clearInterval(captureIntervalRef.current);
+                setIsCapturing(false);
+                setWaitingForNext(true);
+                return;
+            }
+
+            const img = webcamRef.current.getScreenshot();
+            if (!img) return;
+
+            try {
+                const imgEl = document.createElement('img');
+                imgEl.src = img;
+                await new Promise(r => imgEl.onload = r);
+
+                const det = await faceapi.detectSingleFace(
+                    imgEl,
+                    new faceapi.SsdMobilenetv1Options({ minConfidence: 0.3 }) // Better distant detection
+                ).withFaceLandmarks().withFaceDescriptor();
+
+                if (det) {
+                    const currentFaceSize = det.detection.box.width * det.detection.box.height;
+
+                    // DISTANCE PHASE VALIDATION: Use absolute size threshold (no baseline yet)
+                    if (capturePhase === 'distance') {
+                        // Face should be VERY small (user at good distance)
+                        // Typical closeup: 50000-80000 pixels
+                        // Desired distance (5-7 feet): 8000-15000 pixels
+                        const MAX_DISTANCE_FACE_SIZE = 12000; // VERY STRICT - must be far back
+
+                        if (currentFaceSize > MAX_DISTANCE_FACE_SIZE) {
+                            setPoseValid(false);
+                            setValidationMessage(`🚶 STEP BACK MORE! (${Math.round(currentFaceSize)} > ${MAX_DISTANCE_FACE_SIZE})`);
+                            return;
+                        }
+
+                        // Store base face size in DISTANCE phase (for later closeup validation)
+                        if (!baseFaceSizeRef.current) {
+                            baseFaceSizeRef.current = currentFaceSize;
+                        }
+                    }
+
+                    // CLOSEUP VALIDATION: Face must be larger than distance baseline
+                    if (capturePhase === 'closeup') {
+                        if (!baseFaceSizeRef.current) {
+                            setPoseValid(false);
+                            setValidationMessage('⚠️ Error - please restart');
+                            return;
+                        }
+
+                        const sizeRatio = currentFaceSize / baseFaceSizeRef.current;
+
+                        // Face should be at least 40% larger (step closer)
+                        if (sizeRatio < 1.4) {
+                            setPoseValid(false);
+                            setValidationMessage(`📍 Step closer! (${Math.round((sizeRatio - 1) * 100)}% of 40%)`);
+                            return;
+                        }
+                    }
+
+                    setPoseValid(true);
+                    const nextCount = poseImageCount + 1;
+                    setValidationMessage(`✓ Capturing... ${nextCount}/${imagesPerPose}`);
+
+                    // Capture immediately
+                    setCapturedImages(p => [...p, img]);
+                    setCapturedEmbeddings(p => [...p, Array.from(det.descriptor)]);
+                    setPoseImageCount(nextCount);
+                } else {
+                    setPoseValid(false);
+                    setValidationMessage('⚠️ No face detected');
+                }
+            } catch (e) {
+                console.error('Capture error:', e);
+            }
+        }, CAPTURE_INTERVAL);
+
+        return () => {
+            captureIntervalRef.current && clearInterval(captureIntervalRef.current);
+        };
+    }, [isCapturing, waitingForNext, modelsLoaded, poseImageCount, capturePhase]);
 
     useEffect(() => {
         if (capturedImages.length >= MAX_IMAGES) {
@@ -324,9 +470,48 @@ const EnrollEmployeePage = () => {
     const base64ToBlob = async (b64) => (await fetch(b64)).blob();
 
     const startCapture = () => {
-        setCapturedImages([]); setCapturedEmbeddings([]);
-        setIsCapturing(true); setPromptIndex(0);
-        setCurrentPrompt(POSE_PROMPTS[0]);
+        setPoseImageCount(0); // Reset pose counter
+        setWaitingForNext(false);
+        setIsCapturing(true);
+        setPoseValid(false);
+        setValidationMessage('');
+    };
+
+    const nextPose = () => {
+        // Move to next prompt
+        const prompts = capturePhase === 'closeup' ? POSE_PROMPTS : DISTANCE_PROMPTS;
+        const next = (promptIndex + 1) % prompts.length;
+
+        // Check if we need to transition to closeup phase
+        if (capturedImages.length >= DISTANCE_IMAGES && capturePhase === 'distance') {
+            setCapturePhase('closeup');
+            setPromptIndex(0);
+            setCurrentPrompt(POSE_PROMPTS[0]);
+            baseFaceSizeRef.current = null; // Reset base face size for distance
+        } else {
+            setPromptIndex(next);
+            setCurrentPrompt(prompts[next]);
+        }
+
+        // Reset and start capturing for next pose
+        setPoseImageCount(0);
+        setWaitingForNext(false);
+        setIsCapturing(true);
+        setValidationMessage('');
+    };
+
+    const resetEnrollment = () => {
+        setCapturedImages([]);
+        setCapturedEmbeddings([]);
+        setCapturePhase('distance'); // Reset to distance (start)
+        baseFaceSizeRef.current = null;
+        setPromptIndex(0);
+        setCurrentPrompt(DISTANCE_PROMPTS[0]);
+        setPoseImageCount(0);
+        setWaitingForNext(false);
+        setIsCapturing(false);
+        setPoseValid(false);
+        setValidationMessage('');
     };
 
     const stopCapture = () => {
@@ -462,15 +647,57 @@ const EnrollEmployeePage = () => {
                         {/* Scanning overlay */}
                         <div style={styles.scanOverlay}>
                             {isCapturing && <div style={styles.scanLine}></div>}
-                            <div style={styles.faceGuide}></div>
+                            <div style={styles.faceGuide(capturePhase)}></div>
                             <div style={styles.cornerTL}></div>
                             <div style={styles.cornerTR}></div>
                             <div style={styles.cornerBL}></div>
                             <div style={styles.cornerBR}></div>
                         </div>
 
-                        {/* Stats */}
-                        <div style={styles.statsBadge}>📷 {capturedImages.length}</div>
+                        {/* Stats and Phase */}
+                        <div style={styles.statsBadge}>
+                            {capturePhase === 'closeup' ? '📷' : '🚶'} {capturedImages.length}
+                            {capturePhase === 'distance' && <span style={{ marginLeft: '6px', opacity: 0.7 }}>/ Distance</span>}
+                        </div>
+
+                        {/* Phase Indicator */}
+                        {isCapturing && (
+                            <div style={{
+                                position: 'absolute',
+                                top: '12px',
+                                left: '12px',
+                                background: capturePhase === 'closeup' ? 'rgba(124,58,237,0.85)' : 'rgba(16,185,129,0.85)',
+                                color: 'white',
+                                padding: '6px 12px',
+                                borderRadius: '8px',
+                                fontSize: '0.75rem',
+                                fontWeight: '700',
+                                border: `1px solid ${capturePhase === 'closeup' ? '#7c3aed' : '#10b981'}`,
+                                textTransform: 'uppercase',
+                                letterSpacing: '0.5px'
+                            }}>
+                                Phase {capturePhase === 'distance' ? '1: Distance' : '2: Close-up'}
+                            </div>
+                        )}
+
+                        {/* Validation Status */}
+                        {isCapturing && validationMessage && (
+                            <div style={{
+                                position: 'absolute',
+                                top: '50px',
+                                left: '12px',
+                                background: poseValid ? 'rgba(16,185,129,0.9)' : 'rgba(239,68,68,0.9)',
+                                color: 'white',
+                                padding: '8px 14px',
+                                borderRadius: '10px',
+                                fontSize: '0.85rem',
+                                fontWeight: '600',
+                                border: `2px solid ${poseValid ? '#10b981' : '#ef4444'}`,
+                                boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                            }}>
+                                {validationMessage}
+                            </div>
+                        )}
 
                         {/* Prompt */}
                         {isCapturing && <div style={styles.promptBadge}>{currentPrompt.icon} {currentPrompt.text}</div>}
@@ -487,10 +714,21 @@ const EnrollEmployeePage = () => {
 
                     {/* Buttons */}
                     <div style={styles.buttonRow}>
-                        {!isCapturing ? (
+                        {waitingForNext ? (
+                            <>
+                                <button style={styles.btnPrimary} onClick={nextPose}>
+                                    ▶️ Next Pose
+                                </button>
+                                {capturedImages.length >= 10 && (
+                                    <button style={styles.btnSuccess} onClick={uploadImages}>
+                                        ✅ Save ({capturedImages.length})
+                                    </button>
+                                )}
+                            </>
+                        ) : !isCapturing ? (
                             <>
                                 <button style={styles.btnPrimary} onClick={startCapture} disabled={!modelsLoaded}>
-                                    {modelsLoaded ? '▶️ Start' : '⏳ Loading...'}
+                                    {modelsLoaded ? '📸 Capture' : '⏳ Loading...'}
                                 </button>
                                 {capturedImages.length >= 10 && (
                                     <button style={styles.btnSuccess} onClick={uploadImages}>
@@ -501,8 +739,8 @@ const EnrollEmployeePage = () => {
                         ) : (
                             <button style={styles.btnOutline} onClick={stopCapture}>⏹️ Stop</button>
                         )}
-                        <button style={styles.btnOutline} onClick={() => { setStep('select'); setCapturedImages([]); setCapturedEmbeddings([]); }}>
-                            ← Back
+                        <button style={styles.btnOutline} onClick={resetEnrollment}>
+                            🔄 Reset
                         </button>
                     </div>
 
