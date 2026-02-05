@@ -2,23 +2,29 @@
 Attendance serializers.
 """
 from rest_framework import serializers
-from apps.users.serializers import UserMinimalSerializer
-from .models import AttendanceRecord, AttendanceOverride, ValidationRule
+from core.models import SaaSAttendance, SaaSEmployee, ValidationRule
+# Note: ValidationRule import from .models was removed as we just fixed models.py to only have ValidationRule
+# But core.models seems to be where we should be getting things now? 
+# Wait, I kept ValidationRule in apps/attendance/models.py, so I should import it from there.
 
+from apps.attendance.models import ValidationRule
 
 class AttendanceRecordSerializer(serializers.ModelSerializer):
-    """Serializer for AttendanceRecord."""
-    user = UserMinimalSerializer(read_only=True)
-    total_hours = serializers.ReadOnlyField()
-    is_complete = serializers.ReadOnlyField()
+    """Serializer for SaaSAttendance (formerly AttendanceRecord)."""
+    # Use check_in_time alias for backward compatibility if needed, or mapping
+    # Core model uses: employee, check_in, check_out, status
+    
+    employee_name = serializers.CharField(source='employee.first_name', read_only=True)
+    check_in_time = serializers.DateTimeField(source='check_in', read_only=True)
+    check_out_time = serializers.DateTimeField(source='check_out', read_only=True)
     
     class Meta:
-        model = AttendanceRecord
+        model = SaaSAttendance
         fields = [
-            'id', 'user', 'check_in_time', 'check_out_time',
-            'status', 'face_match_score', 'image_quality_score',
-            'vehicle_detected', 'people_count', 'validation_details',
-            'total_hours', 'is_complete', 'created_at'
+            'id', 'employee_name', 'check_in_time', 'check_out_time',
+            'status', 'check_in_confidence', 
+            'vehicle_detected', 'screen_data',
+            'created_at'
         ]
         read_only_fields = ['id', 'created_at']
 
@@ -36,9 +42,9 @@ class CheckInResponseSerializer(serializers.Serializer):
     """Serializer for check-in response."""
     attendance_id = serializers.UUIDField()
     status = serializers.CharField()
-    employee = UserMinimalSerializer()
+    employee_name = serializers.CharField()
     check_in_time = serializers.DateTimeField()
-    validation = serializers.DictField()
+    confidence = serializers.FloatField(required=False)
 
 
 class CheckOutSerializer(serializers.Serializer):
@@ -53,18 +59,6 @@ class OverrideSerializer(serializers.Serializer):
     reason = serializers.CharField()
 
 
-class AttendanceOverrideSerializer(serializers.ModelSerializer):
-    """Serializer for AttendanceOverride."""
-    performed_by = UserMinimalSerializer(read_only=True)
-    
-    class Meta:
-        model = AttendanceOverride
-        fields = [
-            'id', 'attendance', 'performed_by',
-            'previous_status', 'new_status', 'reason', 'created_at'
-        ]
-
-
 class ValidationRuleSerializer(serializers.ModelSerializer):
     """Serializer for ValidationRule."""
     class Meta:
@@ -72,18 +66,19 @@ class ValidationRuleSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'code', 'description',
             'is_enabled', 'is_required', 'threshold',
-            'config', 'applies_to_all', 'departments'
+            'config', 'applies_to_all'
         ]
 
 
 class AttendanceHistorySerializer(serializers.ModelSerializer):
     """Serializer for attendance history listing."""
-    user = UserMinimalSerializer(read_only=True)
-    total_hours = serializers.ReadOnlyField()
+    employee_name = serializers.CharField(source='employee.first_name', read_only=True)
+    check_in_time = serializers.DateTimeField(source='check_in', read_only=True)
+    check_out_time = serializers.DateTimeField(source='check_out', read_only=True)
     
     class Meta:
-        model = AttendanceRecord
+        model = SaaSAttendance
         fields = [
-            'id', 'user', 'check_in_time', 'check_out_time',
-            'status', 'face_match_score', 'total_hours'
+            'id', 'employee_name', 'check_in_time', 'check_out_time',
+            'status', 'check_in_confidence'
         ]

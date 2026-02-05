@@ -123,6 +123,10 @@ class User(AbstractBaseUser, PermissionsMixin, SoftDeleteModel):
     last_login_ip = models.GenericIPAddressField(null=True, blank=True)
     last_login_device = models.CharField(max_length=255, blank=True)
     
+    # Timestamps (needed for MySQL)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
     objects = UserManager()
     
     USERNAME_FIELD = 'email'

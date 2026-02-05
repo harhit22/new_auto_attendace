@@ -5,14 +5,14 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
-const API_BASE = 'http://localhost:8000/api/v1/attendance';
+const API_BASE = '/api/v1/attendance';
 
 const AdminEmployeesPage = () => {
     const navigate = useNavigate();
     const { attendanceOrg } = useAuth();
     const [employees, setEmployees] = useState([]);
     const [showAddEmployee, setShowAddEmployee] = useState(false);
-    const [newEmployee, setNewEmployee] = useState({ employee_id: '', first_name: '', last_name: '', department: '' });
+    const [newEmployee, setNewEmployee] = useState({ employee_id: '', first_name: '', last_name: '', department: '', role: 'driver' });
     const [status, setStatus] = useState('');
     const [createdEmployee, setCreatedEmployee] = useState(null); // Store newly created employee with password
 
@@ -48,7 +48,7 @@ const AdminEmployeesPage = () => {
                 });
                 loadEmployees();
                 setShowAddEmployee(false);
-                setNewEmployee({ employee_id: '', first_name: '', last_name: '', department: '' });
+                setNewEmployee({ employee_id: '', first_name: '', last_name: '', department: '', role: 'driver' });
             } else {
                 setStatus(`❌ ${data.error}`);
             }
@@ -70,7 +70,25 @@ const AdminEmployeesPage = () => {
 
     const copyEnrollLink = (emp) => {
         const link = `${window.location.origin}/enroll-employee?org=${attendanceOrg.org_code}&emp=${emp.employee_id}`;
-        navigator.clipboard.writeText(link);
+
+        // Fallback for non-HTTPS environments
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(link);
+        } else {
+            // Fallback using textarea
+            const textArea = document.createElement('textarea');
+            textArea.value = link;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            try {
+                document.execCommand('copy');
+            } catch (err) {
+                console.error('Copy failed:', err);
+            }
+            document.body.removeChild(textArea);
+        }
         setStatus(`✅ Link copied! Send to ${emp.name || emp.first_name}`);
     };
 
@@ -121,6 +139,7 @@ const AdminEmployeesPage = () => {
                                         <th style={{ padding: '12px', textAlign: 'left' }}>Password</th>
                                         <th style={{ padding: '12px', textAlign: 'left' }}>Name</th>
                                         <th style={{ padding: '12px', textAlign: 'left' }}>Dept</th>
+                                        <th style={{ padding: '12px', textAlign: 'left' }}>Role</th>
                                         <th style={{ padding: '12px', textAlign: 'center' }}>Images</th>
                                         <th style={{ padding: '12px', textAlign: 'center' }}>Status</th>
                                         <th style={{ padding: '12px', textAlign: 'right' }}>Actions</th>
@@ -145,6 +164,18 @@ const AdminEmployeesPage = () => {
                                             </td>
                                             <td style={{ padding: '12px', fontWeight: '500' }}>{e.name || `${e.first_name} ${e.last_name}`}</td>
                                             <td style={{ padding: '12px', color: 'var(--text-secondary)' }}>{e.department || '-'}</td>
+                                            <td style={{ padding: '12px', textTransform: 'capitalize' }}>
+                                                <span style={{
+                                                    padding: '4px 10px',
+                                                    borderRadius: '4px',
+                                                    background: e.role === 'helper' ? ' #e0f2fe' : '#fef3c7',
+                                                    color: e.role === 'helper' ? '#0ea5e9' : '#d97706',
+                                                    fontSize: '0.85rem',
+                                                    fontWeight: '500'
+                                                }}>
+                                                    {e.role || 'driver'}
+                                                </span>
+                                            </td>
                                             <td style={{ padding: '12px', textAlign: 'center' }}>
                                                 <span style={{
                                                     fontWeight: '600',
@@ -189,6 +220,15 @@ const AdminEmployeesPage = () => {
                                     <input type="text" className="form-input" placeholder="EMP001"
                                         value={newEmployee.employee_id}
                                         onChange={e => setNewEmployee({ ...newEmployee, employee_id: e.target.value })} />
+                                </div>
+                                <div className="form-group">
+                                    <label className="form-label">Role</label>
+                                    <select className="form-input"
+                                        value={newEmployee.role || 'driver'}
+                                        onChange={e => setNewEmployee({ ...newEmployee, role: e.target.value })}>
+                                        <option value="driver">Driver</option>
+                                        <option value="helper">Helper</option>
+                                    </select>
                                 </div>
                                 <div className="form-group">
                                     <label className="form-label">Department</label>

@@ -6,7 +6,7 @@ import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
-const API_BASE = 'http://localhost:8000/api/v1/attendance';
+const API_BASE = '/api/v1/attendance';  // Uses relative path for nginx proxy
 
 const AttendanceLogin = () => {
     const navigate = useNavigate();
@@ -170,6 +170,20 @@ const AttendanceLogin = () => {
             padding: '20px'
         }}>
             <div className="card" style={{ maxWidth: '440px', width: '100%', padding: '50px 40px' }}>
+                {/* Back Button */}
+                <Link to="/" style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    color: 'var(--text-secondary)',
+                    textDecoration: 'none',
+                    marginBottom: '24px',
+                    fontSize: '0.9rem',
+                    transition: 'color 0.2s'
+                }}>
+                    ← Back to Home
+                </Link>
+
                 <div style={{ textAlign: 'center', marginBottom: '32px' }}>
                     <div style={{ fontSize: '3.5rem', marginBottom: '16px' }}>🏢</div>
                     <h1 style={{ marginBottom: '8px', fontSize: '1.8rem' }}>Attendance System</h1>

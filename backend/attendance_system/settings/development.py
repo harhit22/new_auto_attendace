@@ -5,7 +5,10 @@ from .base import *
 
 DEBUG = True
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0', '4c3e138fbbd8.ngrok-free.app', '.ngrok-free.app']
+
+# Trust ngrok for CSRF (required for POST requests)
+CSRF_TRUSTED_ORIGINS = ['https://4c3e138fbbd8.ngrok-free.app', 'https://*.ngrok-free.app']
 
 # Database - MySQL for development
 DATABASES = {

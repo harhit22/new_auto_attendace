@@ -1,6 +1,6 @@
 /**
  * Main App Component with Routing
- * Two Products: Face Trainer (individuals) + Attendance SaaS (businesses)
+ * Simplified: Attendance SaaS Product Only
  */
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
@@ -8,34 +8,33 @@ import './index.css';
 
 // Context
 import { AuthProvider } from './context/AuthContext';
-import { TrainerRoute, AttendanceRoute } from './components/ProtectedRoute';
+import { AttendanceRoute } from './components/ProtectedRoute';
 
 // Public Pages
 import HomePage from './pages/HomePage';
-import TransformerTutorialPage from './pages/TransformerTutorialPage';
-import ProjectWalkthroughPage from './pages/ProjectWalkthroughPage';
-
-// Trainer Product (Individuals)
-import TrainerLogin from './pages/trainer/TrainerLogin';
-import TrainerDashboard from './pages/trainer/TrainerDashboard';
-import EnrollmentPage from './pages/EnrollmentPage';
-import DatasetPage from './pages/DatasetPage';
-import RecognitionPage from './pages/RecognitionPage';
-import ProRecognitionPage from './pages/ProRecognitionPage';
 
 // Attendance Product (Businesses)
 import AttendanceLogin from './pages/attendance/AttendanceLogin';
 import AttendanceAdmin from './pages/attendance/AttendanceAdmin';
+import ManagerDashboard from './pages/attendance/ManagerDashboard';
 import AdminAttendancePage from './pages/attendance/AdminAttendancePage';
 import AdminEmployeesPage from './pages/attendance/AdminEmployeesPage';
 import AdminModelsPage from './pages/attendance/AdminModelsPage';
-import LightModelPage from './pages/attendance/LightModelPage';
-import HeavyModelPage from './pages/attendance/HeavyModelPage';
+import FaceModelPage from './pages/attendance/FaceModelPage';
+import YoloModelsPage from './pages/attendance/YoloModelsPage';
+import MultiLoginPage from './pages/attendance/MultiLoginPage';
 import EmployeeLogin from './pages/attendance/EmployeeLogin';
 import EmployeeDashboard from './pages/attendance/EmployeeDashboard';
-import KioskPage from './pages/KioskPage';
-import SelfEnrollPage from './pages/SelfEnrollPage';
+import HelperLoginPage from './pages/attendance/HelperLoginPage';
+import VehicleCapturePage from './pages/attendance/VehicleCapturePage';
+import DriverCheckoutPage from './pages/attendance/DriverCheckoutPage';
+import HelperCheckoutPage from './pages/attendance/HelperCheckoutPage';
 import EnrollEmployeePage from './pages/EnrollEmployeePage';
+import TripDetailPage from './pages/attendance/TripDetailPage';
+
+// Root Admin Pages
+import RootAdminLogin from './pages/admin/RootAdminLogin';
+import OrganizationSelector from './pages/admin/OrganizationSelector';
 
 function App() {
   const [isLoading, setIsLoading] = useState(true);
@@ -64,35 +63,25 @@ function App() {
         <Routes>
           {/* Public - Landing */}
           <Route path="/" element={<HomePage />} />
-          <Route path="/learn/transformers" element={<TransformerTutorialPage />} />
-          <Route path="/learn/project" element={<ProjectWalkthroughPage />} />
 
-          {/* ===== TRAINER PRODUCT ===== */}
-          <Route path="/trainer/login" element={<TrainerLogin />} />
-          <Route path="/trainer/dashboard" element={
-            <TrainerRoute><TrainerDashboard /></TrainerRoute>
-          } />
-          {/* These can be accessed after trainer login */}
-          <Route path="/trainer/datasets" element={
-            <TrainerRoute><DatasetPage /></TrainerRoute>
-          } />
-          <Route path="/trainer/recognize" element={
-            <TrainerRoute><ProRecognitionPage /></TrainerRoute>
-          } />
-          {/* Legacy routes - redirect or allow open access for now */}
-          <Route path="/enroll" element={<EnrollmentPage />} />
-          <Route path="/dataset" element={<DatasetPage />} />
-          <Route path="/recognize" element={<RecognitionPage />} />
-          <Route path="/pro" element={<ProRecognitionPage />} />
+          {/* ===== ROOT ADMIN ===== */}
+          <Route path="/admin/login" element={<RootAdminLogin />} />
+          <Route path="/admin/select-org" element={<OrganizationSelector />} />
 
           {/* ===== ATTENDANCE PRODUCT ===== */}
-          {/* Admin Login */}
-          <Route path="/attendance/login" element={<AttendanceLogin />} />
+          {/* Admin */}
+          {/* <Route path="/attendance/login" element={<AttendanceLogin />} /> */}
           <Route path="/attendance/admin" element={
             <AttendanceRoute><AttendanceAdmin /></AttendanceRoute>
           } />
+          <Route path="/attendance/manager" element={
+            <AttendanceRoute><ManagerDashboard /></AttendanceRoute>
+          } />
           <Route path="/attendance/admin/attendance" element={
             <AttendanceRoute><AdminAttendancePage /></AttendanceRoute>
+          } />
+          <Route path="/attendance/admin/trip/:tripId" element={
+            <AttendanceRoute><TripDetailPage /></AttendanceRoute>
           } />
           <Route path="/attendance/admin/employees" element={
             <AttendanceRoute><AdminEmployeesPage /></AttendanceRoute>
@@ -100,25 +89,37 @@ function App() {
           <Route path="/attendance/admin/models" element={
             <AttendanceRoute><AdminModelsPage /></AttendanceRoute>
           } />
-          <Route path="/attendance/admin/models/light" element={
-            <AttendanceRoute><LightModelPage /></AttendanceRoute>
+          <Route path="/attendance/admin/models/face" element={
+            <AttendanceRoute><FaceModelPage /></AttendanceRoute>
           } />
-          <Route path="/attendance/admin/models/heavy" element={
-            <AttendanceRoute><HeavyModelPage /></AttendanceRoute>
+          {/* Redirect old URLs to new face model page */}
+          <Route path="/attendance/admin/models/light" element={<Navigate to="/attendance/admin/models/face" replace />} />
+          <Route path="/attendance/admin/models/heavy" element={<Navigate to="/attendance/admin/models/face" replace />} />
+          <Route path="/attendance/admin/yolo" element={
+            <AttendanceRoute><YoloModelsPage /></AttendanceRoute>
           } />
 
-          {/* Employee Individual Login */}
+          {/* Multi-Login with Detection */}
+          <Route path="/multi-login" element={<MultiLoginPage />} />
+
+          {/* Employee Trip Workflow */}
           <Route path="/employee/login" element={<EmployeeLogin />} />
           <Route path="/employee/dashboard" element={<EmployeeDashboard />} />
+          <Route path="/employee/helper-login" element={<HelperLoginPage />} />
+          <Route path="/employee/vehicle-capture" element={<VehicleCapturePage />} />
+          <Route path="/employee/driver-checkout" element={<DriverCheckoutPage />} />
+          <Route path="/employee/helper-checkout" element={<HelperCheckoutPage />} />
 
-          {/* Public kiosk and enrollment */}
-          <Route path="/kiosk" element={<KioskPage />} />
-          <Route path="/enroll-face" element={<SelfEnrollPage />} />
+          {/* Enrollment */}
           <Route path="/enroll-employee" element={<EnrollEmployeePage />} />
 
-          {/* Redirects for old routes */}
-          <Route path="/dashboard" element={<Navigate to="/attendance/login" replace />} />
-          <Route path="/login" element={<Navigate to="/attendance/login" replace />} />
+          {/* Redirects */}
+          <Route path="/kiosk" element={<Navigate to="/employee/login" replace />} />
+
+          {/* Redirects */}
+          {/* <Route path="/login" element={<Navigate to="/attendance/login" replace />} /> */}
+          <Route path="/dashboard" element={<Navigate to="/attendance/admin" replace />} />
+          <Route path="/enroll" element={<Navigate to="/enroll-employee" replace />} />
 
           {/* Catch all */}
           <Route path="*" element={<Navigate to="/" replace />} />

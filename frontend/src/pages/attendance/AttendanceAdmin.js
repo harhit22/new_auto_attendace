@@ -6,24 +6,37 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
-const API_BASE = 'http://localhost:8000/api/v1/attendance';
+const API_BASE = '/api/v1/attendance';  // Uses relative path for nginx proxy
 
 const AttendanceAdmin = () => {
     const navigate = useNavigate();
     const { attendanceOrg, logoutAttendance } = useAuth();
     const [employees, setEmployees] = useState([]);
     const [todaySummary, setTodaySummary] = useState(null);
-    const [recognitionMode, setRecognitionMode] = useState('light');
+    const [recogMode, setRecogMode] = useState('light'); // Renamed to local var to avoid conflict
+    const [attendanceMode, setAttendanceMode] = useState('daily');
+    const [complianceEnforcement, setComplianceEnforcement] = useState('report');
     const [status, setStatus] = useState('');
     const [trainingStats, setTrainingStats] = useState({ light_count: 0, heavy_count: 0, total: 0 });
 
+    // Use a clearer variable name for the UI state
+    const recognitionMode = recogMode;
+
     useEffect(() => {
         if (!attendanceOrg) return;
-        setRecognitionMode(attendanceOrg.recognition_mode || 'light');
+        setRecogMode(attendanceOrg.recognition_mode || 'light');
+        setAttendanceMode(attendanceOrg.attendance_mode || 'daily');
+        setComplianceEnforcement(attendanceOrg.compliance_enforcement || 'report');
         loadData();
     }, [attendanceOrg]);
 
     const loadData = async () => {
+        // Guard: Don't make API calls if org is not loaded yet
+        if (!attendanceOrg || !attendanceOrg.id) {
+            // Wait for org to load
+            return;
+        }
+
         try {
             const [empRes, summaryRes, trainingRes] = await Promise.all([
                 fetch(`${API_BASE}/employees/?organization_id=${attendanceOrg.id}`),
@@ -47,17 +60,26 @@ const AttendanceAdmin = () => {
         }
     };
 
-    const toggleRecognitionMode = async (mode) => {
+    const updateSetting = async (key, value) => {
         try {
+            const payload = { org_code: attendanceOrg.org_code };
+            payload[key] = value;
+
             const res = await fetch(`${API_BASE}/update-settings/`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ org_code: attendanceOrg.org_code, recognition_mode: mode })
+                body: JSON.stringify(payload)
             });
             const data = await res.json();
+
             if (data.success) {
-                setRecognitionMode(mode);
-                setStatus(`✅ Kiosk will now use ${mode === 'heavy' ? 'Heavy (DeepFace)' : 'Light (Quick)'} model`);
+                // Update local state based on what changed
+                if (data.recognition_mode) setRecogMode(data.recognition_mode);
+                if (data.attendance_mode) setAttendanceMode(data.attendance_mode);
+                if (data.compliance_enforcement) setComplianceEnforcement(data.compliance_enforcement);
+
+                setStatus(`✅ Settings updated successfully!`);
+                setTimeout(() => setStatus(''), 3000);
             }
         } catch (e) {
             setStatus(`❌ Error: ${e.message}`);
@@ -66,7 +88,7 @@ const AttendanceAdmin = () => {
 
     const handleLogout = () => {
         logoutAttendance();
-        navigate('/attendance/login');
+        navigate('/admin/login');
     };
 
     return (
@@ -78,7 +100,25 @@ const AttendanceAdmin = () => {
                         <span className="logo-icon">🏢</span>
                         <span>{attendanceOrg?.name}</span>
                     </div>
-                    <nav className="nav">
+                    <nav className="nav" style={{ display: 'flex', gap: '12px' }}>
+                        {/* Change Organization button - only show if root admin */}
+                        {useAuth().rootAdmin && (
+                            <button
+                                onClick={() => navigate('/admin/select-org')}
+                                style={{
+                                    background: 'rgba(99, 102, 241, 0.9)',
+                                    border: 'none',
+                                    padding: '8px 16px',
+                                    borderRadius: '50px',
+                                    color: 'white',
+                                    cursor: 'pointer',
+                                    fontWeight: '600',
+                                    fontSize: '0.9rem'
+                                }}
+                            >
+                                🔄 Change Organization
+                            </button>
+                        )}
                         <button
                             onClick={handleLogout}
                             style={{
@@ -219,6 +259,45 @@ const AttendanceAdmin = () => {
                         </div>
                     </div>
 
+                    {/* CARD 4: YOLO OBJECT DETECTION */}
+                    <div
+                        className="card"
+                        style={{ padding: '30px', cursor: 'pointer', transition: 'transform 0.2s, box-shadow 0.2s' }}
+                        onClick={() => navigate('/attendance/admin/yolo')}
+                        onMouseEnter={e => e.currentTarget.style.transform = 'translateY(-4px)'}
+                        onMouseLeave={e => e.currentTarget.style.transform = 'translateY(0)'}
+                    >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '16px' }}>
+                            <div style={{
+                                width: '64px', height: '64px', borderRadius: '16px',
+                                background: 'linear-gradient(135deg, rgba(236, 72, 153, 0.2), rgba(219, 39, 119, 0.1))',
+                                border: '1px solid rgba(236, 72, 153, 0.3)',
+                                color: '#f472b6', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                fontSize: '2rem'
+                            }}>
+                                🎯
+                            </div>
+                            <div>
+                                <h2 style={{ margin: 0, fontSize: '1.4rem', color: 'var(--text-primary)' }}>YOLO Detection</h2>
+                                <p style={{ margin: '4px 0 0', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Object Detection</p>
+                            </div>
+                        </div>
+                        <p style={{ color: 'var(--text-secondary)', marginBottom: '16px', lineHeight: '1.5' }}>
+                            Upload custom YOLO models to detect uniforms, safety gear, badges, and more during check-in.
+                        </p>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                            <span style={{ background: 'rgba(236, 72, 153, 0.1)', color: '#f472b6', padding: '4px 10px', borderRadius: '20px', fontSize: '0.8rem' }}>
+                                🎯 Custom Models
+                            </span>
+                            <span style={{ background: 'rgba(236, 72, 153, 0.1)', color: '#f472b6', padding: '4px 10px', borderRadius: '20px', fontSize: '0.8rem' }}>
+                                ✅ Compliance
+                            </span>
+                        </div>
+                        <div style={{ marginTop: '20px', color: '#f472b6', fontWeight: '600' }}>
+                            Manage YOLO Models →
+                        </div>
+                    </div>
+
                 </div>
 
                 {/* Status Message */}
@@ -231,18 +310,20 @@ const AttendanceAdmin = () => {
 
                 {/* SETTINGS CARD - Model Selection */}
                 <div className="card" style={{ marginTop: '24px', padding: '24px' }}>
-                    <h3 style={{ marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        ⚙️ Kiosk Settings
+                    <h3 style={{ marginBottom: '24px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        ⚙️ Organization Settings
                     </h3>
-                    <div style={{ marginBottom: '20px' }}>
-                        <label style={{ color: 'var(--text-secondary)', marginBottom: '12px', display: 'block' }}>
-                            Face Recognition Model for Check-in
-                        </label>
+
+                    {/* 1. KIOSK RECOGNITION MODEL */}
+                    <div style={{ marginBottom: '32px' }}>
+                        <h4 style={{ color: 'var(--text-primary)', marginBottom: '12px', fontSize: '1.1rem' }}>
+                            1. Face Recognition Model
+                        </h4>
                         <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
                             {/* Light Model Option */}
                             <button
                                 className={`btn ${recognitionMode === 'light' ? 'btn-primary' : 'btn-outline'}`}
-                                onClick={() => trainingStats.light_count > 0 && toggleRecognitionMode('light')}
+                                onClick={() => trainingStats.light_count > 0 && updateSetting('recognition_mode', 'light')}
                                 disabled={trainingStats.light_count === 0}
                                 style={{
                                     padding: '16px 24px',
@@ -250,25 +331,26 @@ const AttendanceAdmin = () => {
                                     opacity: trainingStats.light_count === 0 ? 0.5 : 1,
                                     cursor: trainingStats.light_count === 0 ? 'not-allowed' : 'pointer',
                                     position: 'relative',
-                                    minWidth: '180px'
+                                    minWidth: '220px',
+                                    flex: 1
                                 }}
                             >
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                                     <span style={{ fontSize: '1.3rem' }}>⚡</span>
                                     <span style={{ fontWeight: '600' }}>Light Model</span>
                                 </div>
-                                <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>Fast • ~85% accuracy</div>
+                                <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>Fast • ~85% accuracy</div>
                                 <div style={{
                                     marginTop: '8px',
                                     padding: '4px 8px',
                                     borderRadius: '6px',
-                                    fontSize: '0.7rem',
+                                    fontSize: '0.75rem',
                                     fontWeight: '600',
                                     background: trainingStats.light_count > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
                                     color: trainingStats.light_count > 0 ? '#10b981' : '#ef4444'
                                 }}>
                                     {trainingStats.light_count > 0
-                                        ? `✅ ${trainingStats.light_count}/${trainingStats.total} trained`
+                                        ? `✅ ${trainingStats.light_count} trained`
                                         : '❌ No employees trained'
                                     }
                                 </div>
@@ -277,7 +359,7 @@ const AttendanceAdmin = () => {
                             {/* Heavy Model Option */}
                             <button
                                 className={`btn ${recognitionMode === 'heavy' ? 'btn-primary' : 'btn-outline'}`}
-                                onClick={() => trainingStats.heavy_count > 0 && toggleRecognitionMode('heavy')}
+                                onClick={() => trainingStats.heavy_count > 0 && updateSetting('recognition_mode', 'heavy')}
                                 disabled={trainingStats.heavy_count === 0}
                                 style={{
                                     padding: '16px 24px',
@@ -285,33 +367,85 @@ const AttendanceAdmin = () => {
                                     opacity: trainingStats.heavy_count === 0 ? 0.5 : 1,
                                     cursor: trainingStats.heavy_count === 0 ? 'not-allowed' : 'pointer',
                                     position: 'relative',
-                                    minWidth: '180px'
+                                    minWidth: '220px',
+                                    flex: 1
                                 }}
                             >
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
                                     <span style={{ fontSize: '1.3rem' }}>🧠</span>
                                     <span style={{ fontWeight: '600' }}>Heavy Model</span>
                                 </div>
-                                <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>DeepFace • ~99% accuracy</div>
+                                <div style={{ fontSize: '0.8rem', opacity: 0.8 }}>DeepFace • ~99% accuracy</div>
                                 <div style={{
                                     marginTop: '8px',
                                     padding: '4px 8px',
                                     borderRadius: '6px',
-                                    fontSize: '0.7rem',
+                                    fontSize: '0.75rem',
                                     fontWeight: '600',
                                     background: trainingStats.heavy_count > 0 ? 'rgba(16, 185, 129, 0.2)' : 'rgba(239, 68, 68, 0.2)',
                                     color: trainingStats.heavy_count > 0 ? '#10b981' : '#ef4444'
                                 }}>
                                     {trainingStats.heavy_count > 0
-                                        ? `✅ ${trainingStats.heavy_count}/${trainingStats.total} trained`
+                                        ? `✅ ${trainingStats.heavy_count} trained`
                                         : '❌ No employees trained'
                                     }
                                 </div>
                             </button>
                         </div>
-                        <p style={{ color: 'var(--text-muted)', fontSize: '0.85rem', marginTop: '16px' }}>
-                            💡 Only models with trained employees can be selected for kiosk check-in.
-                        </p>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '32px' }}>
+
+                        {/* 2. ATTENDANCE MODE */}
+                        <div>
+                            <h4 style={{ color: 'var(--text-primary)', marginBottom: '12px', fontSize: '1.1rem' }}>
+                                2. Attendance Mode
+                            </h4>
+                            <div style={{ display: 'flex', gap: '12px' }}>
+                                <button
+                                    className={`btn ${attendanceMode === 'daily' ? 'btn-primary' : 'btn-outline'}`}
+                                    onClick={() => updateSetting('attendance_mode', 'daily')}
+                                    style={{ flex: 1, padding: '16px', background: attendanceMode === 'daily' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : undefined }}
+                                >
+                                    <div style={{ fontSize: '1.2rem', marginBottom: '4px' }}>📅 Daily</div>
+                                    <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>First In / Last Out</div>
+                                </button>
+                                <button
+                                    className={`btn ${attendanceMode === 'continuous' ? 'btn-primary' : 'btn-outline'}`}
+                                    onClick={() => updateSetting('attendance_mode', 'continuous')}
+                                    style={{ flex: 1, padding: '16px', background: attendanceMode === 'continuous' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : undefined }}
+                                >
+                                    <div style={{ fontSize: '1.2rem', marginBottom: '4px' }}>⏱️ Continuous</div>
+                                    <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>Log Every Scan</div>
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 3. COMPLIANCE ENFORCEMENT */}
+                        <div>
+                            <h4 style={{ color: 'var(--text-primary)', marginBottom: '12px', fontSize: '1.1rem' }}>
+                                3. Compliance Enforcement
+                            </h4>
+                            <div style={{ display: 'flex', gap: '12px' }}>
+                                <button
+                                    className={`btn ${complianceEnforcement === 'block' ? 'btn-primary' : 'btn-outline'}`}
+                                    onClick={() => updateSetting('compliance_enforcement', 'block')}
+                                    style={{ flex: 1, padding: '16px', background: complianceEnforcement === 'block' ? 'linear-gradient(135deg, #ef4444, #dc2626)' : undefined }}
+                                >
+                                    <div style={{ fontSize: '1.2rem', marginBottom: '4px' }}>🔒 Block Entry</div>
+                                    <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>Strict Safety Rules</div>
+                                </button>
+                                <button
+                                    className={`btn ${complianceEnforcement === 'report' ? 'btn-primary' : 'btn-outline'}`}
+                                    onClick={() => updateSetting('compliance_enforcement', 'report')}
+                                    style={{ flex: 1, padding: '16px', background: complianceEnforcement === 'report' ? 'linear-gradient(135deg, #f59e0b, #d97706)' : undefined }}
+                                >
+                                    <div style={{ fontSize: '1.2rem', marginBottom: '4px' }}>⚠️ Report Only</div>
+                                    <div style={{ fontSize: '0.75rem', opacity: 0.8 }}>Log Violations</div>
+                                </button>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
             </div>

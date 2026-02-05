@@ -25,6 +25,7 @@ urlpatterns = [
         path('models/', include('apps.ml_models.urls')),
         path('sync/', include('apps.sync.urls')),
         path('analytics/', include('apps.analytics.urls')),
+        path('detection/', include('apps.detection.urls')),
     ])),
     
     # API Documentation

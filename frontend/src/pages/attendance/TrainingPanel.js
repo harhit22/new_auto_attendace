@@ -6,7 +6,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import Webcam from 'react-webcam';
 import ImageGallery from './ImageGallery';
 
-const API_BASE = 'http://localhost:8000/api/v1/attendance';
+const API_BASE = '/api/v1/attendance';  // Uses relative path for nginx proxy
 
 const TrainingPanel = ({ orgCode }) => {
     const webcamRef = useRef(null);

@@ -61,3 +61,7 @@ face_embeddings/
 *.tmp
 *.temp
 fix_trained_status.py
+
+# ML Models
+*.task
+*.onnx

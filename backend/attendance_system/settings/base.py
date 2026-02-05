@@ -30,7 +30,7 @@ THIRD_PARTY_APPS = [
     'corsheaders',
     'django_filters',
     'django_celery_beat',
-    'django_celery_results',
+    # 'django_celery_results',
     'drf_spectacular',
 ]
 
@@ -109,7 +109,7 @@ PASSWORD_HASHERS = [
 
 # Internationalization
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata'
 USE_I18N = True
 USE_TZ = True
 
@@ -151,9 +151,9 @@ REST_FRAMEWORK = {
         'rest_framework.throttling.UserRateThrottle'
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/hour',
-        'user': '1000/hour',
-        'attendance': '60/minute',  # Custom throttle for attendance
+        'anon': '2000/day',
+        'user': '20000/day',
+        'attendance': '1000/minute',  # Custom throttle for attendance
     },
 }
 

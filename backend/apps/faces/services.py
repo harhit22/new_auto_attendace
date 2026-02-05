@@ -108,33 +108,21 @@ class FaceProcessingService:
         """
         Find matching user for a given face embedding.
         
+        NOTE: This method is DEPRECATED. Use services.vector_db.find_best_match() instead
+        which uses ChromaDB for efficient similarity search.
+        
         Returns (user_id, confidence) tuple.
         """
-        from apps.faces.models import FaceEmbedding
+        logger.warning("find_matching_user is deprecated, use vector_db.find_best_match instead")
         
-        threshold = threshold or self.settings['FACE_MATCH_THRESHOLD']
-        best_match_user = None
-        best_score = 0.0
-        
-        # Get all active embeddings
-        active_embeddings = FaceEmbedding.objects.filter(
-            is_active=True,
-            user__is_active=True,
-            user__deleted_at__isnull=True
-        ).select_related('user')
-        
-        for face_embedding in active_embeddings:
-            stored_embedding = face_embedding.get_embedding()
-            similarity = self.compare_embeddings(embedding, stored_embedding)
-            
-            if similarity > best_score:
-                best_score = similarity
-                best_match_user = str(face_embedding.user_id)
-        
-        if best_score >= threshold:
-            return best_match_user, best_score
-        
-        return None, best_score
+        # Redirect to ChromaDB vector service
+        try:
+            from services.vector_db import vector_db
+            # This would need org_code and model_type which we don't have here
+            # Return None to indicate caller should use vector_db directly
+            return None, 0.0
+        except ImportError:
+            return None, 0.0
     
     def process_enrollment_images(
         self,
@@ -144,10 +132,13 @@ class FaceProcessingService:
         """
         Process multiple images for enrollment.
         
+        NOTE: This method is DEPRECATED. Actual enrollment now uses:
+        - SaaSEmployee model for storing embeddings
+        - ChromaDB (vector_db service) for fast similarity search
+        
         Returns enrollment results with accepted/rejected counts.
         """
-        from apps.faces.models import FaceImage, FaceEmbedding
-        from apps.users.models import User
+        logger.warning("process_enrollment_images is deprecated - use CaptureImagesView directly")
         
         results = {
             'processed': 0,
@@ -157,7 +148,6 @@ class FaceProcessingService:
             'embeddings_created': 0
         }
         
-        user = User.objects.get(id=user_id)
         quality_threshold = self.settings['IMAGE_QUALITY_THRESHOLD']
         
         for i, image in enumerate(images):

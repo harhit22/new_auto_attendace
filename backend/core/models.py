@@ -96,6 +96,20 @@ class Organization(models.Model):
         choices=[('light', 'Light (Quick)'), ('heavy', 'Heavy (DeepFace)')],
         help_text="Which model to use for kiosk face recognition"
     )
+
+    # New Flexible Configuration Fields
+    attendance_mode = models.CharField(
+        max_length=20,
+        default='daily',
+        choices=[('daily', 'Daily (First In/Last Out)'), ('continuous', 'Continuous (Log Every Scan)')],
+        help_text="How attendance is calculated and stored"
+    )
+    compliance_enforcement = models.CharField(
+        max_length=20,
+        default='report',
+        choices=[('block', 'Block Entry on Failure'), ('report', 'Allow & Report Failure')],
+        help_text="Action to take when object detection rules (helmet/vest) fail"
+    )
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -149,6 +163,7 @@ class SaaSEmployee(models.Model):
     phone = models.CharField(max_length=20, blank=True)
     department = models.CharField(max_length=100, blank=True)
     designation = models.CharField(max_length=100, blank=True)
+    role = models.CharField(max_length=50, default='driver', blank=True, help_text="Employee role")
     
     # Employee Login Credentials
     password = models.CharField(max_length=50, blank=True, help_text="Employee's login password")
@@ -209,6 +224,147 @@ class SaaSEmployee(models.Model):
         return self.image_count >= 100
 
 
+class Area(models.Model):
+    """
+    Area/Zone within a city (e.g., North Zone, South Zone).
+    Organizations can have multiple areas for geographic division.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='areas'
+    )
+    
+    # area info
+    name = models.CharField(max_length=100, help_text="Area/Zone name (e.g., North Zone)")
+    name_hindi = models.CharField(max_length=100, blank=True, help_text="Area name in Hindi")
+    code = models.CharField(max_length=20, help_text="Short code (e.g., NZ, SZ)")
+    
+    # metadata
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'areas'
+        ordering = ['name']
+        unique_together = ['organization', 'code']
+    
+    def __str__(self):
+        return f"{self.name} ({self.organization.org_code})"
+    
+    @property
+    def ward_count(self):
+        return self.wards.count()
+
+
+class Ward(models.Model):
+    """
+    Ward within an Area (e.g., Ward 1, Ward 2).
+    Each ward contains multiple routes for garbage collection.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    area = models.ForeignKey(
+        Area,
+        on_delete=models.CASCADE,
+        related_name='wards'
+    )
+    
+    # ward info
+    number = models.CharField(max_length=50, help_text="Ward number/code (e.g., 1, 2, commercial02)")
+    name = models.CharField(max_length=100, blank=True, help_text="Optional ward name")
+    name_hindi = models.CharField(max_length=100, blank=True, help_text="Ward name in Hindi")
+    
+    # metadata
+    description = models.TextField(blank=True)
+    population = models.IntegerField(null=True, blank=True, help_text="Estimated population")
+    is_active = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'wards'
+        ordering = ['area', 'number']
+        unique_together = ['area', 'number']
+    
+    def __str__(self):
+        display = f"Ward {self.number}"
+        if self.name:
+            display += f" - {self.name}"
+        display += f" ({self.area.name})"
+        return display
+    
+    @property
+    def route_count(self):
+        return self.routes.count()
+    
+    @property
+    def organization(self):
+        return self.area.organization
+
+
+class Route(models.Model):
+    """
+    Garbage collection route within a ward.
+    Drivers are assigned to routes for their daily duty.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ward = models.ForeignKey(
+        Ward,
+        on_delete=models.CASCADE,
+        related_name='routes'
+    )
+    
+    # route info
+    code = models.CharField(max_length=20, help_text="Route code (e.g., R1, R2, A01)")
+    name = models.CharField(max_length=100, help_text="Route name or description")
+    name_hindi = models.CharField(max_length=100, blank=True, help_text="Route name in Hindi")
+    
+    # route details
+    description = models.TextField(blank=True, help_text="Route details, landmarks, etc.")
+    estimated_duration_hours = models.DecimalField(
+        max_digits=4,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Estimated time to complete route (hours)"
+    )
+    distance_km = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Route distance in kilometers"
+    )
+    
+    # status
+    is_active = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'routes'
+        ordering = ['ward', 'code']
+        unique_together = ['ward', 'code']
+    
+    def __str__(self):
+        return f"{self.code} - {self.name} (Ward {self.ward.number})"
+    
+    @property
+    def full_path(self):
+        """Return full hierarchy path for display."""
+        return f"{self.ward.area.organization.name} > {self.ward.area.name} > Ward {self.ward.number} > {self.name}"
+    
+    @property
+    def organization(self):
+        return self.ward.area.organization
+
+
 class SaaSAttendance(models.Model):
     """
     Daily attendance record for SaaS employees.
@@ -246,6 +402,7 @@ class SaaSAttendance(models.Model):
     # Recognition confidence
     check_in_confidence = models.FloatField(null=True, blank=True)
     check_out_confidence = models.FloatField(null=True, blank=True)
+    verification_method = models.CharField(max_length=50, blank=True, default='', help_text='face_employee_dashboard, face_realtime, etc.')
     
     notes = models.TextField(blank=True)
     
@@ -265,3 +422,281 @@ class SaaSAttendance(models.Model):
         if self.check_in and self.check_out:
             self.work_duration = self.check_out - self.check_in
             self.save(update_fields=['work_duration', 'updated_at'])
+
+
+# =============================================================================
+# Custom YOLO Detection Models
+# =============================================================================
+
+def yolo_model_upload_path(instance, filename):
+    """Generate unique path: yolo_models/{org_code}/{uuid}_{filename}"""
+    import uuid as uuid_lib
+    unique_id = str(uuid_lib.uuid4())[:8]
+    org_code = instance.organization.org_code if instance.organization else 'unknown'
+    return f'yolo_models/{org_code}/{unique_id}_{filename}'
+
+
+class CustomYoloModel(models.Model):
+    """
+    Admin-uploaded YOLO model for custom object detection.
+    Admin can name it anything and configure which classes are required.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='yolo_models'
+    )
+    name = models.CharField(max_length=200, help_text="Admin-defined name for this model")
+    description = models.TextField(blank=True)
+    model_file = models.FileField(upload_to=yolo_model_upload_path, help_text=".pt YOLO model file")
+    classes = models.JSONField(default=list, help_text="Classes this model can detect")
+    is_active = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'custom_yolo_models'
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.name} ({self.organization.org_code})"
+
+
+class DetectionRequirement(models.Model):
+    """
+    Defines which YOLO classes are required/optional for an organization.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    yolo_model = models.ForeignKey(
+        CustomYoloModel,
+        on_delete=models.CASCADE,
+        related_name='requirements'
+    )
+    class_name = models.CharField(max_length=100, help_text="Name of the class to detect")
+    display_name = models.CharField(max_length=200, blank=True, help_text="Human-readable name")
+    is_required = models.BooleanField(default=False, help_text="If true, login fails without this object")
+    
+    class Meta:
+        db_table = 'detection_requirements'
+        unique_together = ['yolo_model', 'class_name']
+    
+    def __str__(self):
+        req = "Required" if self.is_required else "Optional"
+        return f"{self.class_name} ({req})"
+
+
+def login_frame_upload_path(instance, filename):
+    """Generate org-aware path: login_frames/{org_code}/{filename}"""
+    org_code = instance.organization.org_code if instance.organization else 'UNKNOWN'
+    return f'login_frames/{org_code}/{filename}'
+
+
+class LoginDetectionResult(models.Model):
+    """
+    Records what was detected during each login attempt.
+    Links face recognition with object detection results.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='detection_results'
+    )
+    employee = models.ForeignKey(
+        SaaSEmployee,
+        on_delete=models.CASCADE,
+        related_name='detection_results'
+    )
+    yolo_model = models.ForeignKey(
+        CustomYoloModel,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='detection_results'
+    )
+    
+    # Detection results
+    timestamp = models.DateTimeField(auto_now_add=True)
+    face_confidence = models.FloatField(help_text="Face recognition confidence 0-1")
+    detections = models.JSONField(default=dict, help_text='{"helmet": true, "vest": false}')
+    compliance_passed = models.BooleanField(default=True)
+    
+    # Optional: store the frame for audit (NOW ORG-AWARE)
+    frame_image = models.ImageField(upload_to=login_frame_upload_path, null=True, blank=True)
+    
+    class Meta:
+        db_table = 'login_detection_results'
+        ordering = ['-timestamp']
+    
+
+
+
+# =============================================================================
+# Vehicle Compliance & Trip Models
+# =============================================================================
+
+class VehicleComplianceRecord(models.Model):
+    """
+    Vehicle image + YOLO detection results for compliance checking.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='vehicle_compliance_records'
+    )
+    timestamp = models.DateTimeField(auto_now_add=True)
+    
+    # Vehicle image
+    vehicle_image = models.ImageField(upload_to='vehicle_compliance/')
+    
+    # YOLO detections
+    yolo_model = models.ForeignKey(
+        CustomYoloModel,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    detections = models.JSONField(default=dict, help_text='{"hooter": true, "number_plate": true}')
+    
+    # Compliance result
+    compliance_passed = models.BooleanField(default=False)
+    compliance_details = models.JSONField(default=dict, help_text='Full compliance check result')
+    
+    class Meta:
+        db_table = 'vehicle_compliance_records'
+        ordering = ['-timestamp']
+    
+    def __str__(self):
+        status = "✅" if self.compliance_passed else "❌"
+        return f"Vehicle Check {status} - {self.timestamp.strftime('%Y-%m-%d %H:%M')}"
+
+
+class Trip(models.Model):
+    """
+    A complete trip cycle: Check-in to Check-out.
+    Links driver, helper (optional), and vehicle compliance.
+    """
+    TRIP_STATUS = [
+        ('driver_checked_in', 'Driver Checked In'),
+        ('helper_checked_in', 'Helper Checked In'),
+        ('helper_skipped', 'Helper Skipped'),
+        ('checkin_complete', 'Check-in Complete'),
+        ('checkout_started', 'Checkout Started'),
+        ('completed', 'Trip Completed'),
+        ('incomplete', 'Incomplete'),
+    ]
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='trips'
+    )
+    
+    # Route assignment (NEW: city-level hierarchy)
+    route = models.ForeignKey(
+        Route,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trips',
+        help_text="Assigned garbage collection route"
+    )
+    
+    date = models.DateField(auto_now_add=True)
+    
+    # People
+    driver = models.ForeignKey(
+        SaaSEmployee,
+        on_delete=models.CASCADE,
+        related_name='trips_as_driver'
+    )
+    helper = models.ForeignKey(
+        SaaSEmployee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trips_as_helper'
+    )
+    helper_skipped = models.BooleanField(default=False)
+    
+    # Check-in data
+    checkin_time = models.DateTimeField(null=True, blank=True)
+    checkin_driver_detection = models.ForeignKey(
+        LoginDetectionResult,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trip_checkin_driver'
+    )
+    checkin_helper_detection = models.ForeignKey(
+        LoginDetectionResult,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trip_checkin_helper'
+    )
+    checkin_vehicle = models.ForeignKey(
+        VehicleComplianceRecord,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trip_checkin'
+    )
+    checkin_compliance_passed = models.BooleanField(default=False)
+    
+    # Check-out data
+    checkout_time = models.DateTimeField(null=True, blank=True)
+    checkout_driver_detection = models.ForeignKey(
+        LoginDetectionResult,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trip_checkout_driver'
+    )
+    checkout_helper_detection = models.ForeignKey(
+        LoginDetectionResult,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trip_checkout_helper'
+    )
+    checkout_vehicle = models.ForeignKey(
+        VehicleComplianceRecord,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trip_checkout'
+    )
+    checkout_compliance_passed = models.BooleanField(default=False)
+    
+    # Overall status
+    status = models.CharField(max_length=30, choices=TRIP_STATUS, default='driver_checked_in')
+    work_duration = models.DurationField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+    
+    # GPS Location (for verification)
+    checkin_latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    checkin_longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    checkout_latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    checkout_longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'trips'
+        ordering = ['-date', '-checkin_time']
+    
+    def __str__(self):
+        helper_str = f" + {self.helper.full_name}" if self.helper else ""
+        return f"Trip: {self.driver.full_name}{helper_str} - {self.date}"
+    
+    def calculate_work_duration(self):
+        """Calculate work duration when checkout completes."""
+        if self.checkin_time and self.checkout_time:
+            self.work_duration = self.checkout_time - self.checkin_time
+            self.save()

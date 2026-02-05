@@ -13,6 +13,9 @@ export const AuthProvider = ({ children }) => {
     // Attendance organization (business account)
     const [attendanceOrg, setAttendanceOrg] = useState(null);
 
+    // Root admin (manages all organizations)
+    const [rootAdmin, setRootAdmin] = useState(null);
+
     // Loading state
     const [isLoading, setIsLoading] = useState(true);
 
@@ -21,12 +24,16 @@ export const AuthProvider = ({ children }) => {
         try {
             const savedTrainer = localStorage.getItem('trainer_user');
             const savedOrg = localStorage.getItem('attendance_org');
+            const savedAdmin = sessionStorage.getItem('root_admin');
 
             if (savedTrainer) {
                 setTrainerUser(JSON.parse(savedTrainer));
             }
             if (savedOrg) {
                 setAttendanceOrg(JSON.parse(savedOrg));
+            }
+            if (savedAdmin) {
+                setRootAdmin(JSON.parse(savedAdmin));
             }
         } catch (e) {
             console.error('Error loading auth state:', e);
@@ -70,6 +77,24 @@ export const AuthProvider = ({ children }) => {
         isAttendanceLoggedIn: !!attendanceOrg,
         loginAttendance,
         logoutAttendance,
+
+        // Root Admin
+        rootAdmin,
+        isRootAdminLoggedIn: !!rootAdmin,
+        loginRootAdmin: (admin) => {
+            setRootAdmin(admin);
+            sessionStorage.setItem('root_admin', JSON.stringify(admin));
+        },
+        selectOrganization: (org) => {
+            setAttendanceOrg(org);
+            localStorage.setItem('attendance_org', JSON.stringify(org));
+        },
+        logoutRootAdmin: () => {
+            setRootAdmin(null);
+            setAttendanceOrg(null);
+            sessionStorage.removeItem('root_admin');
+            sessionStorage.removeItem('attendance_org');
+        },
 
         // General
         isLoading

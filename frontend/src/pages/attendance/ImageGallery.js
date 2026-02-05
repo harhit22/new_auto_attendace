@@ -4,8 +4,8 @@
  */
 import React, { useState, useEffect } from 'react';
 
-const API_BASE = 'http://localhost:8000/api/v1/attendance';
-const MEDIA_BASE = 'http://localhost:8000';
+const API_BASE = '/api/v1/attendance';  // Uses relative path for nginx proxy
+const MEDIA_BASE = '';  // Uses relative path for nginx proxy
 
 const ImageGallery = ({ orgCode, employeeId, onClose }) => {
     const [data, setData] = useState(null);

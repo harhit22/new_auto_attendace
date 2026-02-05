@@ -7,7 +7,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import Webcam from 'react-webcam';
 
-const API_BASE = 'http://localhost:8000/api/v1/attendance';
+const API_BASE = '/api/v1/attendance';  // Uses relative path for nginx proxy
 
 const HeavyModelPage = () => {
     const navigate = useNavigate();

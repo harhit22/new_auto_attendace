@@ -1,11 +1,13 @@
 """Script to create the database."""
 import pymysql
 
+import os
+
 # Create the database
 connection = pymysql.connect(
     host='localhost',
     user='root',
-    password='mansi@123',
+    password=os.getenv('DB_PASSWORD', 'root'),
     charset='utf8mb4'
 )
 

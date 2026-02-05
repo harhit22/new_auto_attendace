@@ -7,6 +7,19 @@ DEBUG = False
 
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())
 
+# Relax throttling for production (to avoid "Too Many Requests")
+REST_FRAMEWORK = {
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle'
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '10000/day',  # Increased from 2000
+        'user': '100000/day', # Increased from 20000
+        'attendance': '1000/minute',
+    },
+}
+
 # Database - MySQL for production
 DATABASES = {
     'default': {

@@ -37,7 +37,6 @@ class DeepFaceTrainView(APIView):
         
         if len(images) < 3:
             return Response(
-                {'error': 'At least 3 images are required for training'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
@@ -52,7 +51,7 @@ class DeepFaceTrainView(APIView):
                         f.write(chunk)
                     temp_paths.append(f.name)
             
-            # Train
+            # Train (now returns both all_ and active_embeddings)
             result = service.train_person(
                 person_id=person_id,
                 person_name=person_name,
@@ -66,7 +65,42 @@ class DeepFaceTrainView(APIView):
                 except:
                     pass
             
-            return Response(result)
+            # 🔹 NEW: Save both embedding sets to database
+            try:
+                from core.models import SaaSEmployee
+                from django.utils import timezone
+                
+                employee = SaaSEmployee.objects.get(employee_id=person_id)
+                
+                # Archive: All embeddings (200)
+                employee.captured_embeddings = result['all_embeddings']
+                
+                # Active: Best 7 embeddings
+                employee.heavy_embeddings = result['active_embeddings']
+                
+                # Update training status
+                employee.heavy_trained = True
+                employee.heavy_trained_at = timezone.now()
+                employee.image_count = result['all_count']
+                employee.image_status = 'trained'
+                employee.face_enrolled = True
+                
+                employee.save()
+                
+                logger.info(f"Saved {result['all_count']} archive + {result['active_count']} active embeddings for {person_id}")
+                
+            except SaaSEmployee.DoesNotExist:
+                logger.warning(f"Employee {person_id} not found in database, embeddings saved to file only")
+            
+            return Response({
+                'success': True,
+                'person_id': person_id,
+                'person_name': person_name,
+                'archived_embeddings': result['all_count'],
+                'active_embeddings': result['active_count'],
+                'model': result['model'],
+                'message': f'Enrolled with {result["active_count"]} active embeddings (from {result["all_count"]} total)'
+            })
             
         except ValueError as e:
             return Response(
