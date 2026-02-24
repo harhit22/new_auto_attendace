@@ -181,9 +181,10 @@ class DeepFaceService:
             # 1.0 = 0 deg
             # 2.0 = ~45 deg
             # 0.5 = ~-45 deg
-            # We want max ~25 deg => ration roughly 0.6 to 1.6
+            # RELAXED: Allow up to ~45 deg rotation (ratio 0.5 to 2.0)
+            # This is more forgiving for real-world usage
             
-            if ratio < 0.6 or ratio > 1.6:
+            if ratio < 0.5 or ratio > 2.0:
                  return {
                     'is_frontal': False,
                     'yaw': round((ratio-1)*45, 1),
@@ -239,8 +240,8 @@ class DeepFaceService:
                 if d_right == 0: d_right = 0.001
                 ratio = d_left / d_right
                 
-                # Check thresholds (0.6 to 1.6)
-                if ratio < 0.6 or ratio > 1.6:
+                # Check thresholds (RELAXED: 0.5 to 2.0 = ~45 deg rotation allowed)
+                if ratio < 0.5 or ratio > 2.0:
                     is_frontal = False
                     yaw = round((ratio-1)*45, 1)
                     pose_error = 'Face rotated too much. Look straight.'

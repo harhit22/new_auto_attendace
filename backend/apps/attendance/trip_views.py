@@ -19,6 +19,7 @@ from core.models import (
     LoginDetectionResult, CustomYoloModel
 )
 from apps.detection.compliance_rules import check_full_compliance
+from .reports import generate_trip_excel
 
 
 class TripViewSet(viewsets.ViewSet):
@@ -37,6 +38,7 @@ class TripViewSet(viewsets.ViewSet):
     7. POST /trips/{id}/vehicle-checkout/ - Vehicle compliance, complete trip
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     parser_classes = [MultiPartParser, JSONParser]
     
     def list(self, request):
@@ -112,12 +114,14 @@ class TripViewSet(viewsets.ViewSet):
                 'checkin_helper_image': get_image_url(trip.checkin_helper_detection),
                 'checkin_vehicle_image': get_vehicle_image_url(trip.checkin_vehicle),
                 'checkin_vehicle_detections': trip.checkin_vehicle.detections if trip.checkin_vehicle else None,
+                'checkin_vehicle_plate_number': trip.checkin_vehicle.plate_number if trip.checkin_vehicle else None,
                 'checkin_compliance_details': trip.checkin_vehicle.compliance_details if trip.checkin_vehicle else None,
                 # Check-out images
                 'checkout_driver_image': get_image_url(trip.checkout_driver_detection),
                 'checkout_helper_image': get_image_url(trip.checkout_helper_detection),
                 'checkout_vehicle_image': get_vehicle_image_url(trip.checkout_vehicle),
                 'checkout_vehicle_detections': trip.checkout_vehicle.detections if trip.checkout_vehicle else None,
+                'checkout_vehicle_plate_number': trip.checkout_vehicle.plate_number if trip.checkout_vehicle else None,
                 'checkout_compliance_details': trip.checkout_vehicle.compliance_details if trip.checkout_vehicle else None,
                 # GPS Locations
                 'checkin_location': {
@@ -128,9 +132,54 @@ class TripViewSet(viewsets.ViewSet):
                     'latitude': float(trip.checkout_latitude) if trip.checkout_latitude else None,
                     'longitude': float(trip.checkout_longitude) if trip.checkout_longitude else None
                 } if trip.checkout_latitude and trip.checkout_longitude else None,
+                # Substitute Mode Info
+                'is_substitute_driver': trip.is_substitute_driver,
+                'is_substitute_helper': trip.is_substitute_helper,
+                'substitute_driver_name': trip.substitute_driver_name or None,
+                'substitute_driver_phone': trip.substitute_driver_phone or None,
             })
         
         return Response({'trips': data})
+
+    @action(detail=False, methods=['get'])
+    def export_excel(self, request):
+        """
+        Download trips data as Excel (.xlsx)
+        GET /trips/export_excel/?organization_id=X&ward_id=Y&start_date=Z...
+        """
+        # Reuse filtering logic from list()
+        org_id = request.query_params.get('organization_id')
+        ward_id = request.query_params.get('ward_id')
+        route_id = request.query_params.get('route_id')
+        date_filter = request.query_params.get('date')
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        
+        if not org_id and not ward_id and not route_id:
+            return Response({'error': 'organization_id, ward_id, or route_id required'}, status=400)
+        
+        query = Trip.objects.all()
+        
+        if route_id:
+            query = query.filter(route_id=route_id)
+        elif ward_id:
+            query = query.filter(route__ward_id=ward_id)
+        elif org_id:
+            query = query.filter(organization_id=org_id)
+            
+        if start_date and end_date:
+            query = query.filter(date__gte=start_date, date__lte=end_date)
+        elif date_filter:
+            query = query.filter(date=date_filter)
+            
+        # Prefetch related data for efficiency
+        queryset = query.select_related(
+            'driver', 'helper', 'route',
+            'checkin_vehicle', 'checkout_vehicle',
+            'route__ward'
+        ).order_by('-date', '-checkin_time')
+        
+        return generate_trip_excel(queryset)
 
     def retrieve(self, request, pk=None):
         """Get single trip details"""
@@ -148,7 +197,12 @@ class TripViewSet(viewsets.ViewSet):
                 'image_url': trip.helper.face_image.url if trip.helper.face_image else None
             } if trip.helper else None,
             'helper_skipped': trip.helper_skipped,
-            'checkin_time': trip.checkin_time.isoformat() if trip.checkin_time else None
+            'checkin_time': trip.checkin_time.isoformat() if trip.checkin_time else None,
+            # Substitute Mode
+            'is_substitute_driver': trip.is_substitute_driver,
+            'is_substitute_helper': trip.is_substitute_helper,
+            'substitute_driver_name': trip.substitute_driver_name or None,
+            'substitute_driver_phone': trip.substitute_driver_phone or None,
         }
         return Response(data)
 
@@ -206,12 +260,22 @@ class TripViewSet(viewsets.ViewSet):
         employee_id = request.data.get('employee_id', '').strip()
         image_file = request.FILES.get('image')
         
+        # Substitute mode
+        is_substitute = request.data.get('is_substitute', '').lower() in ('true', '1', 'yes')
+        substitute_name = request.data.get('substitute_name', '').strip()
+        substitute_phone = request.data.get('substitute_phone', '').strip()
+        substitute_photo = request.FILES.get('substitute_photo')  # Face photo of substitute
+        substitute_license = request.FILES.get('substitute_license')  # License photo
+        
         # Check for frame-burst upload (passive liveness)
         frame_files = request.FILES.getlist('frames')  # Multiple frames
         challenge_frame = request.data.get('challenge_frame') # Active liveness sync
         
-        if not org_code or not employee_id or (not image_file and not frame_files):
-            return Response({'error': 'org_code, employee_id, and image (or frames) required'}, status=400)
+        if not org_code or not employee_id:
+            return Response({'error': 'org_code and employee_id required'}, status=400)
+        
+        if not is_substitute and not image_file and not frame_files:
+            return Response({'error': 'image (or frames) required for non-substitute check-in'}, status=400)
         
         try:
             org = Organization.objects.get(org_code=org_code, is_active=True)
@@ -236,49 +300,66 @@ class TripViewSet(viewsets.ViewSet):
         except SaaSEmployee.DoesNotExist:
             return Response({'error': 'Employee not found'}, status=404)
         
-        # Verify face (with optional passive liveness if frames provided)
-        # If frame_files has 8+ frames, passive liveness runs first
-        # Otherwise falls back to single-frame YOLO check
-        face_result = self._verify_face(
-            employee, 
-            image_file if image_file else frame_files[len(frame_files)//2] if frame_files else None,
-            org,
-            frame_files=frame_files if len(frame_files) >= 8 else None,
-            challenge_frame=challenge_frame
-        )
-        if not face_result['success']:
-            return Response(face_result, status=401)
-
         now = timezone.now()
-        
-        # Save face detection result
-        detection = LoginDetectionResult.objects.create(
-            organization=org,
-            employee=employee,
-            face_confidence=face_result.get('confidence', 0),
-            detections={},
-            compliance_passed=True
-        )
         from django.core.files.base import ContentFile
+        detection = None
         
-        # Save frame image (handle both single image and frame-burst modes)
-        if image_file:
-            # Single image mode
-            image_file.seek(0)
-            detection.frame_image.save(
-                f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_{"helper" if employee.role == "helper" else "driver"}.jpg',
-                ContentFile(image_file.read()),
-                save=True
+        if is_substitute:
+            # SUBSTITUTE MODE: Skip face verification, just save photo
+            logger.info(f"🔄 SUBSTITUTE MODE: {substitute_name} replacing {employee.full_name}")
+            
+            detection = LoginDetectionResult.objects.create(
+                organization=org,
+                employee=employee,
+                face_confidence=0.0,
+                detections={'substitute': True, 'substitute_name': substitute_name},
+                compliance_passed=True
             )
-        elif frame_files and len(frame_files) > 0:
-            # Frame-burst mode - save middle frame
-            middle_frame = frame_files[len(frame_files) // 2]
-            middle_frame.seek(0)
-            detection.frame_image.save(
-                f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_{"helper" if employee.role == "helper" else "driver"}.jpg',
-                ContentFile(middle_frame.read()),
-                save=True
+            
+            # Save substitute photo as detection frame
+            if substitute_photo:
+                substitute_photo.seek(0)
+                detection.frame_image.save(
+                    f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_substitute.jpg',
+                    ContentFile(substitute_photo.read()),
+                    save=True
+                )
+        else:
+            # NORMAL MODE: Verify face
+            face_result = self._verify_face(
+                employee, 
+                image_file if image_file else frame_files[len(frame_files)//2] if frame_files else None,
+                org,
+                frame_files=frame_files if len(frame_files) >= 8 else None,
+                challenge_frame=challenge_frame
             )
+            if not face_result['success']:
+                return Response(face_result, status=401)
+            
+            detection = LoginDetectionResult.objects.create(
+                organization=org,
+                employee=employee,
+                face_confidence=face_result.get('confidence', 0),
+                detections={},
+                compliance_passed=True
+            )
+            
+            # Save frame image
+            if image_file:
+                image_file.seek(0)
+                detection.frame_image.save(
+                    f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_{"helper" if employee.role == "helper" else "driver"}.jpg',
+                    ContentFile(image_file.read()),
+                    save=True
+                )
+            elif frame_files and len(frame_files) > 0:
+                middle_frame = frame_files[len(frame_files) // 2]
+                middle_frame.seek(0)
+                detection.frame_image.save(
+                    f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_{"helper" if employee.role == "helper" else "driver"}.jpg',
+                    ContentFile(middle_frame.read()),
+                    save=True
+                )
 
         # Get GPS/Route (Common)
         latitude = request.data.get('latitude')
@@ -361,8 +442,29 @@ class TripViewSet(viewsets.ViewSet):
             checkin_driver_detection=detection,
             checkin_latitude=latitude if latitude else None,
             checkin_longitude=longitude if longitude else None,
-            status='driver_checked_in'
+            status='driver_checked_in',
+            is_substitute_driver=is_substitute,
+            substitute_driver_name=substitute_name if is_substitute else '',
+            substitute_driver_phone=substitute_phone if is_substitute else '',
         )
+        
+        # Save substitute files on trip (after creation)
+        if is_substitute:
+            if substitute_photo:
+                substitute_photo.seek(0)
+                trip.substitute_driver_photo.save(
+                    f'sub_driver_{employee_id}_{now.strftime("%Y%m%d")}.jpg',
+                    ContentFile(substitute_photo.read()),
+                    save=False
+                )
+            if substitute_license:
+                substitute_license.seek(0)
+                trip.substitute_driver_license.save(
+                    f'sub_license_{employee_id}_{now.strftime("%Y%m%d")}.jpg',
+                    ContentFile(substitute_license.read()),
+                    save=False
+                )
+            trip.save()
         
         return Response({
             'success': True,
@@ -378,7 +480,7 @@ class TripViewSet(viewsets.ViewSet):
         Step 2: Helper checks in with face verification.
         
         POST /trips/{trip_id}/helper-checkin/
-        Body: employee_id, password, image (face photo)
+        Body: employee_id, password, image (face photo) OR frames (list)
         """
         trip = get_object_or_404(Trip, pk=pk)
         
@@ -391,8 +493,18 @@ class TripViewSet(viewsets.ViewSet):
         password = request.data.get('password', '').strip()
         image_file = request.FILES.get('image')
         
-        if not employee_id or not image_file:
-            return Response({'error': 'employee_id and image required'}, status=400)
+        # Substitute mode
+        is_substitute = request.data.get('is_substitute', '').lower() in ('true', '1', 'yes')
+        substitute_photo = request.FILES.get('substitute_photo')
+        
+        # Check for frame-burst upload (passive liveness)
+        frame_files = request.FILES.getlist('frames')
+        challenge_frame = request.data.get('challenge_frame')
+        
+        if not employee_id:
+            return Response({'error': 'employee_id required'}, status=400)
+        if not is_substitute and not image_file and not frame_files:
+            return Response({'error': 'image (or frames) required for non-substitute check-in'}, status=400)
         
         # Security: Prevent Driver from being Helper
         if trip.driver.employee_id == employee_id:
@@ -411,32 +523,75 @@ class TripViewSet(viewsets.ViewSet):
         if password and helper.password and helper.password != password:
             return Response({'error': 'Invalid password'}, status=401)
         
-        # Verify face
-        face_result = self._verify_face(helper, image_file, trip.organization)
-        if not face_result['success']:
-            return Response(face_result, status=401)
-        
-        # Save detection
         now = timezone.now()
-        detection = LoginDetectionResult.objects.create(
-            organization=trip.organization,
-            employee=helper,
-            face_confidence=face_result['confidence'],
-            detections={},
-            compliance_passed=True
-        )
         from django.core.files.base import ContentFile
-        image_file.seek(0)
-        detection.frame_image.save(
-            f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_helper.jpg',
-            ContentFile(image_file.read()),
-            save=True
-        )
+        detection = None
+        
+        if is_substitute:
+            # SUBSTITUTE MODE: Skip face verification
+            logger.info(f"🔄 SUBSTITUTE HELPER: replacing {helper.full_name}")
+            
+            detection = LoginDetectionResult.objects.create(
+                organization=trip.organization,
+                employee=helper,
+                face_confidence=0.0,
+                detections={'substitute': True},
+                compliance_passed=True
+            )
+            if substitute_photo:
+                substitute_photo.seek(0)
+                detection.frame_image.save(
+                    f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_sub_helper.jpg',
+                    ContentFile(substitute_photo.read()),
+                    save=True
+                )
+        else:
+            # NORMAL MODE: Verify face
+            face_result = self._verify_face(
+                helper, 
+                image_file if image_file else frame_files[len(frame_files)//2] if frame_files else None,
+                trip.organization,
+                frame_files=frame_files if len(frame_files) >= 8 else None,
+                challenge_frame=challenge_frame
+            )
+            if not face_result['success']:
+                return Response(face_result, status=401)
+            
+            detection = LoginDetectionResult.objects.create(
+                organization=trip.organization,
+                employee=helper,
+                face_confidence=face_result.get('confidence', 0),
+                detections={},
+                compliance_passed=True
+            )
+            if image_file:
+                image_file.seek(0)
+                detection.frame_image.save(
+                    f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_helper.jpg',
+                    ContentFile(image_file.read()),
+                    save=True
+                )
+            elif frame_files and len(frame_files) > 0:
+                middle_frame = frame_files[len(frame_files) // 2]
+                middle_frame.seek(0)
+                detection.frame_image.save(
+                    f'{employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_helper.jpg',
+                    ContentFile(middle_frame.read()),
+                    save=True
+                )
         
         # Update Trip
         trip.helper = helper
         trip.checkin_helper_detection = detection
         trip.status = 'helper_checked_in'
+        trip.is_substitute_helper = is_substitute
+        if is_substitute and substitute_photo:
+            substitute_photo.seek(0)
+            trip.substitute_helper_photo.save(
+                f'sub_helper_{employee_id}_{now.strftime("%Y%m%d")}.jpg',
+                ContentFile(substitute_photo.read()),
+                save=False
+            )
         trip.save()
         
         return Response({
@@ -484,27 +639,64 @@ class TripViewSet(viewsets.ViewSet):
             return Response({'error': 'Invalid trip status for vehicle check-in'}, status=400)
         
         image_file = request.FILES.get('image')
+        vehicle_id = request.data.get('vehicle_id')
         if not image_file:
             return Response({'error': 'Vehicle image required'}, status=400)
         
-        # Run YOLO detection
+        # Run YOLO detection (includes image quality checks and OCR)
         yolo_result = self._run_yolo_detection(trip.organization, image_file)
         
+        # Check if image quality failed
+        quality_check = yolo_result.get('quality_check', {})
+        if quality_check and not quality_check.get('passed', True):
+            return Response({
+                'error': yolo_result.get('message', 'Image quality check failed'),
+                'quality_issues': quality_check.get('errors', []),
+                'quality_metrics': {
+                    'blur_variance': quality_check.get('blur', {}).get('variance', 0),
+                    'brightness': quality_check.get('brightness', {}).get('mean_brightness', 0)
+                }
+            }, status=400)
+        
         # Check compliance (pass yolo_model for dynamic requirements)
-        from core.models import CustomYoloModel
+        from core.models import CustomYoloModel, Vehicle
         yolo_model = CustomYoloModel.objects.filter(
             organization=trip.organization,
             is_active=True
         ).first()
         compliance_result = check_full_compliance(yolo_result['detections'], yolo_model)
         
+        # --- NEW OCR MATCHING LOGIC ---
+        import difflib
+        detected_plate = yolo_result.get('plate_number', '').strip().upper()
+        final_plate = detected_plate
+        vehicle_obj = None
+        
+        if vehicle_id:
+            vehicle_obj = Vehicle.objects.filter(id=vehicle_id).first()
+            if vehicle_obj:
+                expected_plate = vehicle_obj.plate_number.strip().upper()
+                if detected_plate and expected_plate:
+                    similarity = difflib.SequenceMatcher(None, detected_plate, expected_plate).ratio()
+                    if similarity >= 0.70:
+                        final_plate = expected_plate
+                        if 'required_classes' in compliance_result:
+                            if 'number_plate' in compliance_result['required_classes']:
+                                compliance_result['required_classes']['number_plate']['passed'] = True
+                                compliance_result['passed'] = all(c['passed'] for c in compliance_result['required_classes'].values())
+
         # Save VehicleComplianceRecord
         now = timezone.now()
         
+        # DEBUG LOG FOR PLATE NUMBER
+        plate_num_to_save = final_plate
+        print(f"DEBUG: Saving VehicleComplianceRecord with plate_number='{plate_num_to_save}'")
+
         vehicle_record = VehicleComplianceRecord.objects.create(
             organization=trip.organization,
             yolo_model_id=yolo_result.get('model_id'),
             detections=yolo_result['detections'],
+            plate_number=plate_num_to_save,
             compliance_passed=compliance_result['passed'],
             compliance_details=compliance_result
         )
@@ -527,6 +719,8 @@ class TripViewSet(viewsets.ViewSet):
             )
         
         # Update trip
+        if vehicle_obj:
+            trip.vehicle = vehicle_obj
         trip.checkin_vehicle = vehicle_record
         trip.checkin_compliance_passed = compliance_result['passed']
         trip.status = 'checkin_complete'
@@ -538,6 +732,9 @@ class TripViewSet(viewsets.ViewSet):
             'compliance_passed': compliance_result['passed'],
             'compliance_summary': compliance_result['summary'],
             'detections': yolo_result['detections'],
+            'plate_number': yolo_result.get('plate_number', ''),
+            'plate_confidence': yolo_result.get('plate_confidence', 0.0),
+            'quality_metrics': quality_check,
             'checks': compliance_result['checks'],
             'message': 'Check-in complete!' if compliance_result['passed'] else 'Check-in complete but compliance failed'
         })
@@ -565,58 +762,79 @@ class TripViewSet(viewsets.ViewSet):
             return Response({'error': msg}, status=400)
         
         image_file = request.FILES.get('image')
+        substitute_photo = request.FILES.get('substitute_photo')
         
         # Check for frame-burst upload (passive liveness)
         frame_files = request.FILES.getlist('frames')  # Multiple frames
-        
-        if not image_file and not frame_files:
-            return Response({'error': 'Face image or frames required'}, status=400)
         
         # Determine who to verify: If driver is a dummy (helper-as-driver scenario), verify helper instead
         is_helper_as_driver = trip.driver.employee_id.startswith('DUMMY_DRIVER_')
         verify_employee = trip.helper if is_helper_as_driver and trip.helper else trip.driver
         
-        # Verify face (with optional passive liveness if frames provided)
-        # Extract challenge frame active liveness key
-        challenge_frame = request.data.get('challenge_frame')
-        
-        face_result = self._verify_face(
-            verify_employee,
-            image_file if image_file else frame_files[len(frame_files)//2] if frame_files else None,
-            trip.organization,
-            frame_files=frame_files if len(frame_files) >= 8 else None,
-            challenge_frame=challenge_frame
-        )
-        if not face_result['success']:
-            return Response(face_result, status=401)
-        
-        # Save detection (record against the actual person being verified)
         now = timezone.now()
-        detection = LoginDetectionResult.objects.create(
-            organization=trip.organization,
-            employee=verify_employee,
-            face_confidence=face_result['confidence'],
-            detections={},
-            compliance_passed=True
-        )
         from django.core.files.base import ContentFile
+        detection = None
         
-        # Save frame image (handle both single image and frame-burst modes)
-        if image_file:
-            image_file.seek(0)
+        if trip.is_substitute_driver:
+            # SUBSTITUTE MODE: Skip face verification
+            logger.info(f"🔄 SUBSTITUTE CHECKOUT: skipping face for {verify_employee.full_name}")
+            
+            if not substitute_photo and not image_file:
+                return Response({'error': 'Photo required for substitute checkout'}, status=400)
+            
+            photo_file = substitute_photo or image_file
+            detection = LoginDetectionResult.objects.create(
+                organization=trip.organization,
+                employee=verify_employee,
+                face_confidence=0.0,
+                detections={'substitute': True},
+                compliance_passed=True
+            )
+            photo_file.seek(0)
             detection.frame_image.save(
-                f'{trip.driver.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_checkout.jpg',
-                ContentFile(image_file.read()),
+                f'{trip.driver.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_sub_checkout.jpg',
+                ContentFile(photo_file.read()),
                 save=True
             )
-        elif frame_files and len(frame_files) > 0:
-            middle_frame = frame_files[len(frame_files) // 2]
-            middle_frame.seek(0)
-            detection.frame_image.save(
-                f'{trip.driver.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_checkout.jpg',
-                ContentFile(middle_frame.read()),
-                save=True
+        else:
+            # NORMAL MODE: Face verification required
+            if not image_file and not frame_files:
+                return Response({'error': 'Face image or frames required'}, status=400)
+            
+            challenge_frame = request.data.get('challenge_frame')
+            face_result = self._verify_face(
+                verify_employee,
+                image_file if image_file else frame_files[len(frame_files)//2] if frame_files else None,
+                trip.organization,
+                frame_files=frame_files if len(frame_files) >= 8 else None,
+                challenge_frame=challenge_frame
             )
+            if not face_result['success']:
+                return Response(face_result, status=401)
+            
+            detection = LoginDetectionResult.objects.create(
+                organization=trip.organization,
+                employee=verify_employee,
+                face_confidence=face_result['confidence'],
+                detections={},
+                compliance_passed=True
+            )
+            
+            if image_file:
+                image_file.seek(0)
+                detection.frame_image.save(
+                    f'{trip.driver.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_checkout.jpg',
+                    ContentFile(image_file.read()),
+                    save=True
+                )
+            elif frame_files and len(frame_files) > 0:
+                middle_frame = frame_files[len(frame_files) // 2]
+                middle_frame.seek(0)
+                detection.frame_image.save(
+                    f'{trip.driver.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_checkout.jpg',
+                    ContentFile(middle_frame.read()),
+                    save=True
+                )
         
         trip.checkout_time = now
         trip.checkout_latitude = request.data.get('latitude')
@@ -664,9 +882,7 @@ class TripViewSet(viewsets.ViewSet):
         employee_id = request.data.get('employee_id', '').strip()
         password = request.data.get('password', '').strip()
         image_file = request.FILES.get('image')
-        
-        if not image_file:
-            return Response({'error': 'Face image required'}, status=400)
+        substitute_photo = request.FILES.get('substitute_photo')
         
         # Verify it's the same helper
         if employee_id and employee_id != trip.helper.employee_id:
@@ -676,27 +892,53 @@ class TripViewSet(viewsets.ViewSet):
         if password and trip.helper.password and trip.helper.password != password:
             return Response({'error': 'Invalid password'}, status=401)
         
-        # Verify face
-        face_result = self._verify_face(trip.helper, image_file, trip.organization)
-        if not face_result['success']:
-            return Response(face_result, status=401)
-        
-        # Save detection
         now = timezone.now()
-        detection = LoginDetectionResult.objects.create(
-            organization=trip.organization,
-            employee=trip.helper,
-            face_confidence=face_result['confidence'],
-            detections={},
-            compliance_passed=True
-        )
         from django.core.files.base import ContentFile
-        image_file.seek(0)
-        detection.frame_image.save(
-            f'{trip.helper.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_helper_out.jpg',
-            ContentFile(image_file.read()),
-            save=True
-        )
+        detection = None
+        
+        if trip.is_substitute_helper:
+            # SUBSTITUTE MODE: Skip face verification
+            logger.info(f"🔄 SUBSTITUTE HELPER CHECKOUT: skipping face for {trip.helper.full_name}")
+            
+            photo_file = substitute_photo or image_file
+            if not photo_file:
+                return Response({'error': 'Photo required for substitute checkout'}, status=400)
+            
+            detection = LoginDetectionResult.objects.create(
+                organization=trip.organization,
+                employee=trip.helper,
+                face_confidence=0.0,
+                detections={'substitute': True},
+                compliance_passed=True
+            )
+            photo_file.seek(0)
+            detection.frame_image.save(
+                f'{trip.helper.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_sub_helper_out.jpg',
+                ContentFile(photo_file.read()),
+                save=True
+            )
+        else:
+            # NORMAL MODE: Face verification
+            if not image_file:
+                return Response({'error': 'Face image required'}, status=400)
+            
+            face_result = self._verify_face(trip.helper, image_file, trip.organization)
+            if not face_result['success']:
+                return Response(face_result, status=401)
+            
+            detection = LoginDetectionResult.objects.create(
+                organization=trip.organization,
+                employee=trip.helper,
+                face_confidence=face_result['confidence'],
+                detections={},
+                compliance_passed=True
+            )
+            image_file.seek(0)
+            detection.frame_image.save(
+                f'{trip.helper.employee_id}_{now.strftime("%Y%m%d_%H%M%S")}_helper_out.jpg',
+                ContentFile(image_file.read()),
+                save=True
+            )
         
         trip.checkout_helper_detection = detection
         trip.save()
@@ -740,8 +982,20 @@ class TripViewSet(viewsets.ViewSet):
         if not image_file:
             return Response({'error': 'Vehicle image required'}, status=400)
         
-        # Run YOLO detection
+        # Run YOLO detection (includes image quality checks and OCR)
         yolo_result = self._run_yolo_detection(trip.organization, image_file)
+        
+        # Check if image quality failed
+        quality_check = yolo_result.get('quality_check', {})
+        if quality_check and not quality_check.get('passed', True):
+            return Response({
+                'error': yolo_result.get('message', 'Image quality check failed'),
+                'quality_issues': quality_check.get('errors', []),
+                'quality_metrics': {
+                    'blur_variance': quality_check.get('blur', {}).get('variance', 0),
+                    'brightness': quality_check.get('brightness', {}).get('mean_brightness', 0)
+                }
+            }, status=400)
         
         # Check compliance (pass yolo_model for dynamic requirements)
         from core.models import CustomYoloModel
@@ -758,6 +1012,7 @@ class TripViewSet(viewsets.ViewSet):
             organization=trip.organization,
             yolo_model_id=yolo_result.get('model_id'),
             detections=yolo_result['detections'],
+            plate_number=yolo_result.get('plate_number', ''),
             compliance_passed=compliance_result['passed'],
             compliance_details=compliance_result
         )
@@ -782,7 +1037,22 @@ class TripViewSet(viewsets.ViewSet):
         # Complete trip
         trip.checkout_vehicle = vehicle_record
         trip.checkout_compliance_passed = compliance_result['passed']
+        
+        # Fallback: Capture location if provided (in case driver-checkout missed it)
+        lat = request.data.get('latitude')
+        lng = request.data.get('longitude')
+        if lat and lng:
+            trip.checkout_latitude = lat
+            trip.checkout_longitude = lng
+            
         trip.status = 'completed'
+        trip.checkout_time = now # Update checkout time to match vehicle checkout if needed, or keep driver checkout time? 
+        # Actually, if driver checkout happened, checkout_time is already set. 
+        # But if we rely on vehicle checkout as the "final" step, we might want to update it or leave it.
+        # Let's leave checkout_time unless it's null (which shouldn't happen if enabled properly)
+        if not trip.checkout_time:
+            trip.checkout_time = now
+
         trip.calculate_work_duration()
         
         return Response({
@@ -794,18 +1064,23 @@ class TripViewSet(viewsets.ViewSet):
             'message': 'Trip completed successfully!' if compliance_result['passed'] else 'Trip completed but checkout compliance failed'
         })
     
-    def _verify_face(self, employee, image_file, org, frame_files=None, challenge_frame=None):
+    def _verify_face(self, employee, image_file, org, frame_files=None, challenge_frame=None, skip_liveness=False):
         """Verify employee face against stored embeddings with optional passive liveness."""
         stored_embeddings = employee.face_embeddings or employee.heavy_embeddings
         if not stored_embeddings:
             return {
                 'success': False,
-                'error': 'No face embeddings found. Please train face model first.'
+                'error': 'आपका चेहरा दर्ज नहीं हुआ है (Face not enrolled). Contact Admin.'
             }
         
         import tempfile
         import os
         import cv2
+        
+        # Skip liveness if already verified (e.g., from unified check-in)
+        if skip_liveness:
+            logger.info("⏩ Skipping liveness (already verified)")
+            frame_files = None  # Force single-frame mode
         
         # ========== LAYER 1: PASSIVE LIVENESS (Frame Burst) ==========
         if frame_files and len(frame_files) >= 8:
@@ -823,7 +1098,7 @@ class TripViewSet(viewsets.ViewSet):
                 
                 if decision == "FAKE":
                     # Use specific message if available
-                    error_msg = liveness_result.get('details', {}).get('msg', 'Liveness check failed. This appears to be a replay attack.')
+                    error_msg = liveness_result.get('details', {}).get('msg', 'Liveness Failed: Fake/Screen detected.')
                     return {
                         'success': False,
                         'error': error_msg,
@@ -858,35 +1133,37 @@ class TripViewSet(viewsets.ViewSet):
 
             # ========== YOLO SPOOF DETECTION (Object) ==========
             try:
-                from ultralytics import YOLO
-                # Load Medium model (Better at detecting phones/laptops than Nano)
-                yolo_spoof = YOLO('yolov8m.pt') 
-                spoof_results = yolo_spoof(temp_path, verbose=False)
+                from apps.detection.yolo_service import get_yolo_service
+                yolo_service = get_yolo_service()
                 
-                # COCO Classes: 67=cell phone, 63=laptop, 62=tv
-                SPOOF_CLASSES = [67, 63, 62] 
+                # Ensure model is loaded (cached)
+                MODEL_ID = 'spoof_check'
+                yolo_service.load_model('yolov8m.pt', MODEL_ID)
                 
-                for r in spoof_results:
-                    for box in r.boxes:
-                        cls_id = int(box.cls[0])
-                        conf = float(box.conf[0])
-                        obj_name = yolo_spoof.names[cls_id]
-                        
-                        # Log everything we see for debugging
-                        if conf > 0.2:
-                             logger.info(f"👀 YOLO Saw: {obj_name} ({conf:.2f})")
+                # Run detection (Get all low confidence boxes too)
+                spoof_detections = yolo_service.detect_with_details(temp_path, MODEL_ID, confidence_threshold=0.2)
+                
+                # COCO Classes to watch for
+                SPOOF_OBJECTS = ['cell phone', 'laptop', 'tv', 'remote']
+                
+                for det in spoof_detections:
+                    obj_name = det['class']
+                    conf = det['confidence']
+                    
+                    # Log for debugging
+                    logger.info(f"👀 YOLO Saw: {obj_name} ({conf:.2f})")
 
-                        # Confidence threshold 0.25 (User requested adjustment)
-                        if cls_id in SPOOF_CLASSES:
-                            if conf > 0.25:
-                                logger.warning(f"❌ Spoof Object Detected: {obj_name} ({conf:.2f})")
-                                return {
-                                    'success': False, 
-                                    'error': f"Spoof Detected: We see a {obj_name} in the frame! Real faces only.",
-                                    'liveness_failed': True
-                                }
-                            else:
-                                logger.info(f"⚠️ Ignored Spoof Object (Low Conf): {obj_name} ({conf:.2f})")
+                    # Check for spoof objects
+                    if obj_name in SPOOF_OBJECTS:
+                        if conf > 0.25:
+                            logger.warning(f"❌ Spoof Object Detected: {obj_name} ({conf:.2f})")
+                            return {
+                                'success': False,
+                                'error': f"Spoof Detected: {obj_name} found. Please remove it.",
+                                'spoof_detected': True
+                            }
+                        else:
+                            logger.info(f"⚠️ Ignored Spoof Object (Low Conf): {obj_name} ({conf:.2f})")
 
                 logger.info("✅ YOLO Spoof Check Passed")
             except Exception as e:
@@ -897,7 +1174,7 @@ class TripViewSet(viewsets.ViewSet):
             result = service.process_face(temp_path)
             
             if not result.get('success'):
-                return {'success': False, 'error': result.get('error', 'Face processing failed')}
+                return {'success': False, 'error': result.get('error', 'Face not detected')}
 
             # ========== PROXIMITY CHECK (Force Context for YOLO) ==========
             # If face takes up > 50% of image width (Tightened from 55%)
@@ -909,13 +1186,13 @@ class TripViewSet(viewsets.ViewSet):
                 img_w = img_size[0]
                 ratio = face_w / img_w
                 
-                # Threshold: 0.40 (40% of screen width)
-                # Tightened to force spoofers back, revealing the phone bezel for YOLO.
-                if ratio > 0.40:
+                # Threshold: 0.60 (60% of screen width)
+                # Adjusted to be less strict on distance requirements
+                if ratio > 0.80:
                      logger.warning(f"⚠️ Face too close (Ratio: {ratio:.2f}). Rejecting.")
                      return {
                         'success': False, 
-                        'error': "Too Close! Please move back so we can see your shoulders.",
+                        'error': "Camera Too Close. Move Back.",
                         'pose_error': True 
                     }
             # =============================================================
@@ -925,7 +1202,7 @@ class TripViewSet(viewsets.ViewSet):
             if not pose_result.get('is_frontal', True):
                 return {
                     'success': False,
-                    'error': f"Please look straight at the camera. {pose_result.get('error', 'Face not frontal')}",
+                    'error': f"Head not straight. Look at camera.",
                     'pose_error': True,
                     'yaw': pose_result.get('yaw'),
                     'pitch': pose_result.get('pitch')
@@ -1041,7 +1318,7 @@ class TripViewSet(viewsets.ViewSet):
                 'message': 'No classes marked as required'
             }
         
-        # Save temp file
+        # Save temp file and load image
         import tempfile
         import os
         import cv2
@@ -1052,54 +1329,530 @@ class TripViewSet(viewsets.ViewSet):
                 temp_file.write(chunk)
             temp_path = temp_file.name
         
-        try:
-            from ultralytics import YOLO
-            model = YOLO(yolo_model.model_file.path)
-            
-            # Get class IDs for required classes only
-            class_ids = []
-            required_lower = [c.lower() for c in required_classes]
-            for idx, name in model.names.items():
-                if name.lower() in required_lower:
-                    class_ids.append(idx)
-            
-            print(f"YOLO filtering to classes: {required_classes} -> IDs: {class_ids}")
-            
-            # Run detection with class filter
-            results = model(temp_path, classes=class_ids if class_ids else None)
-            
-            # Count detections by class
-            detections = {}
-            if results and len(results) > 0:
-                for r in results:
-                    for box in r.boxes:
-                        class_id = int(box.cls[0])
-                        class_name = r.names[class_id]
-                        detections[class_name] = detections.get(class_name, 0) + 1
-            
-            # Generate Annotated Image (with boxes, without confidence scores for cleaner UX)
-            annotated_image = None
-            if results and len(results) > 0:
-                im_array = results[0].plot(conf=False)  # conf=False removes confidence percentages
-                success, encoded_img = cv2.imencode('.jpg', im_array)
-                if success:
-                    annotated_image = encoded_img.tobytes()
-            
-            return {
-                'detections': detections,
-                'model_id': str(yolo_model.id),
-                'model_name': yolo_model.name,
-                'annotated_image': annotated_image,
-                'required_classes': required_classes
-            }
-        except Exception as e:
-            print(f"YOLO Error: {e}")
+        # Load image for quality validation
+        img = cv2.imread(temp_path)
+        if img is None:
             return {
                 'detections': {},
                 'model_id': str(yolo_model.id) if yolo_model else None,
                 'annotated_image': None,
-                'error': str(e)
+                'message': 'Failed to load image',
+                'quality_check': {'passed': False, 'errors': ['Invalid image file']}
+            }
+        
+        # 1. IMAGE QUALITY VALIDATION
+        from ml.image_quality import validate_image_quality
+        quality_result = validate_image_quality(
+            img,
+            blur_threshold=50.0,       # Laplacian variance threshold (lowered for mobile cameras)
+            dark_threshold=50,          # Min brightness
+            bright_threshold=200        # Max brightness
+        )
+        
+        if not quality_result['passed']:
+            # Cleanup temp file
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+            
+            return {
+                'detections': {},
+                'model_id': str(yolo_model.id) if yolo_model else None,
+                'annotated_image': None,
+                'message': quality_result['summary'],
+                'quality_check': quality_result
+            }
+        
+        try:
+            from apps.detection.yolo_service import get_yolo_service
+            yolo_service = get_yolo_service()
+            
+            # Load custom model (cached)
+            model_id = f"custom_{yolo_model.id}"
+            yolo_service.load_model(yolo_model.model_file.path, model_id)
+            
+            # Filter classes (names overlap check)
+            # Service handles this via allowed_classes logic
+            
+            print(f"YOLO filtering to classes: {required_classes}")
+            
+            # Run detection using service
+            results = yolo_service.detect_with_details(
+                temp_path, 
+                model_id, 
+                allowed_classes=required_classes
+            )
+            
+            # Count detections by class
+            detections = {}
+            if results:
+                for det in results:
+                    class_name = det['class']
+                    detections[class_name] = detections.get(class_name, 0) + 1
+            
+                # Generate Annotated Image (Manual Drawing since results is list of dicts)
+                import cv2
+                annotated_img = img.copy()
+                
+                for det in results:
+                    bbox = det.get('bbox')
+                    if bbox:
+                        x1, y1, x2, y2 = map(int, bbox)
+                        label = det.get('class', 'Unknown')
+                        
+                        # Draw Box (Green)
+                        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                        
+                        # Draw Label
+                        text_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
+                        cv2.rectangle(annotated_img, (x1, y1 - 20), (x1 + text_size[0], y1), (0, 255, 0), -1)
+                        cv2.putText(annotated_img, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                
+                res_plotted = annotated_img
+                
+                # 2. NUMBER PLATE OCR EXTRACTION
+                from ml.plate_ocr import extract_plate_from_yolo_result
+                ocr_result = extract_plate_from_yolo_result(img, results)
+                print(f"DEBUG: OCR Result in _run_yolo_detection: {ocr_result}")
+                
+                # Convert to bytes
+                import io
+                is_success, buffer = cv2.imencode(".jpg", res_plotted)
+                if is_success:
+                    return {
+                        'detections': detections,
+                        'model_id': str(yolo_model.id),
+                        'annotated_image': buffer.tobytes(),
+                        'plate_number': ocr_result.get('plate_number', ''),
+                        'plate_confidence': ocr_result.get('confidence', 0.0),
+                        'quality_check': quality_result,
+                        'message': 'Detection successful'
+                    }
+                    
+            return {
+                'detections': {},
+                'model_id': str(yolo_model.id),
+                'annotated_image': None,
+                'message': 'No vehicles detected'
+            }
+            
+        except Exception as e:
+            return {
+                'detections': {},
+                'model_id': str(yolo_model.id) if yolo_model else None,
+                'annotated_image': None,
+                'message': f'YOLO Error: {str(e)}'
             }
         finally:
+            # Cleanup temp file
             if os.path.exists(temp_path):
                 os.remove(temp_path)
+
+    @action(detail=False, methods=['post'], url_path='verify-liveness')
+    def verify_liveness(self, request):
+        """
+        Stateless Verification for Client-Side UI Feedback.
+        Does NOT create a Trip. Just verifies the face/liveness.
+        
+        POST /trips/verify-liveness/
+        Body: employee_id, org_code, frames[] (or image)
+        """
+        org_code = request.data.get('org_code', '').upper().strip()
+        employee_id = request.data.get('employee_id', '').strip()
+        image_file = request.FILES.get('image')
+        frame_files = request.FILES.getlist('frames')
+        challenge_frame = request.data.get('challenge_frame')
+        
+        if not org_code or not employee_id:
+            return Response({'error': 'org_code and employee_id required'}, status=400)
+        
+        logger.info(f"🔍 VERIFY-LIVENESS: org={org_code}, employee={employee_id}, frames={len(frame_files)}, has_image={bool(image_file)}")
+        
+        # Early return if no image data at all
+        if not image_file and not frame_files:
+            return Response({'error': 'No image or frames provided', 'retry': True}, status=400)
+            
+        try:
+            org = Organization.objects.get(org_code=org_code, is_active=True)
+            employee = SaaSEmployee.objects.get(organization=org, employee_id=employee_id, status='active')
+            
+            # Run Verification
+            face_result = self._verify_face(
+                employee, 
+                image_file if image_file else frame_files[len(frame_files)//2] if frame_files else None,
+                org,
+                frame_files=frame_files if len(frame_files) >= 5 else None,
+                challenge_frame=challenge_frame
+            )
+            
+            if face_result['success']:
+                logger.info(f"✅ VERIFY-LIVENESS PASSED: {employee.full_name}")
+                return Response({'success': True, 'message': 'Liveness Verified', 'employee_name': employee.full_name})
+            else:
+                error_msg = face_result.get('error', 'Unknown Error')
+                logger.warning(f"❌ VERIFY-LIVENESS FAILED: {employee.full_name} — {error_msg}")
+                
+                # Special Case: No Embeddings = 400 (Do not retry)
+                if 'not enrolled' in error_msg or 'Face not enrolled' in error_msg:
+                    return Response(face_result, status=400)
+                    
+                return Response(face_result, status=401)
+                
+        except Organization.DoesNotExist:
+            return Response({'error': 'Organization not found', 'retry': False}, status=400)
+        except SaaSEmployee.DoesNotExist:
+            return Response({'error': 'Employee not found', 'retry': False}, status=400)
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+    @action(detail=False, methods=['post'], url_path='unified-checkin')
+    def unified_checkin(self, request):
+        """
+        Atomic Check-in for Single Screen Flow.
+        Creates Trip ONLY after all data is received and validated.
+        
+        POST /trips/unified-checkin/
+        """
+        import json
+        
+        # 1. Parse Data
+        try:
+            org_code = request.data.get('org_code', '').upper().strip()
+            driver_id = request.data.get('driver_id', '').strip()
+            route_id = request.data.get('route_id')
+            
+            # Driver Images
+            driver_frames = request.FILES.getlist('driver_frames')
+            driver_chal = request.data.get('driver_challenge_frame')
+            
+            # Helper Data (Optional)
+            helper_id = request.data.get('helper_id', '').strip()
+            helper_frames = request.FILES.getlist('helper_frames')
+            helper_chal = request.data.get('helper_challenge_frame')
+            
+            # Vehicle Data
+            vehicle_image = request.FILES.get('vehicle_image')
+            
+            # GPS
+            lat = request.data.get('latitude')
+            lng = request.data.get('longitude')
+            
+            # Vehicle ID
+            vehicle_id = request.data.get('vehicle_id')
+            
+            
+        except Exception as e:
+            return Response({'error': f"Data Parse Error: {str(e)}"}, status=400)
+            
+        if not org_code or not driver_id:
+            return Response({'error': "Driver ID and Org Code Required"}, status=400)
+        
+        try:
+            from django.db import transaction
+            # ATOMIC BLOCK START
+            with transaction.atomic():
+                org = Organization.objects.get(org_code=org_code, is_active=True)
+                
+                # --- 1. Verify Driver ---
+                driver = SaaSEmployee.objects.get(organization=org, employee_id=driver_id, status='active')
+
+                # [FIX] Check for Existing Active Trip (Prevent Duplicates)
+                from datetime import date
+                if Trip.objects.filter(driver=driver, status='active', date=date.today()).exists():
+                     # Handle Race Condition: If duplicate check-in within seconds
+                     return Response({'error': "Driver already has an active trip today! Please Checkout first."}, status=400)
+                
+                # Re-run liveness (Security check)
+                if not driver_frames: 
+                    return Response({'error': "Driver frames missing"}, status=400)
+                    
+                driver_res = self._verify_face(
+                    driver, driver_frames[len(driver_frames)//2], org, 
+                    frame_files=driver_frames, challenge_frame=driver_chal,
+                    skip_liveness=True  # Already verified via verify-liveness
+                )
+                if not driver_res['success']:
+                    raise Exception(f"Driver Verification Failed: {driver_res.get('error')}")
+                    
+                # Setup Driver Detection Record
+                now = timezone.now()
+                driver_det = LoginDetectionResult.objects.create(
+                    organization=org, employee=driver, face_confidence=driver_res.get('confidence', 0),
+                    detections={}, compliance_passed=True
+                )
+                from django.core.files.base import ContentFile
+                driver_frames[len(driver_frames)//2].seek(0)  # Reset file pointer after _verify_face
+                driver_det.frame_image.save(
+                    f'{driver_id}_unified.jpg', ContentFile(driver_frames[len(driver_frames)//2].read()), save=True
+                )
+
+                # --- 2. Verify Helper (If exists) ---
+                helper = None
+                helper_det = None
+                if helper_id:
+                    if helper_id == driver_id:
+                        raise Exception("Driver cannot be Helper")
+                        
+                    helper = SaaSEmployee.objects.get(organization=org, employee_id=helper_id, status='active')
+                    
+                    if not helper_frames:
+                        raise Exception("Helper frames missing")
+                        
+                    helper_res = self._verify_face(
+                        helper, helper_frames[len(helper_frames)//2], org, 
+                        frame_files=helper_frames, challenge_frame=helper_chal,
+                        skip_liveness=True  # Already verified via verify-liveness
+                    )
+                    if not helper_res['success']:
+                        raise Exception(f"Helper Verification Failed: {helper_res.get('error')}")
+                        
+                    helper_det = LoginDetectionResult.objects.create(
+                        organization=org, employee=helper, face_confidence=helper_res.get('confidence', 0),
+                        detections={}, compliance_passed=True
+                    )
+                    helper_frames[len(helper_frames)//2].seek(0)  # Reset file pointer after _verify_face
+                    helper_det.frame_image.save(
+                        f'{helper_id}_unified.jpg', ContentFile(helper_frames[len(helper_frames)//2].read()), save=True
+                    )
+                
+                # --- 3. Verify Vehicle ---
+                if not vehicle_image:
+                    raise Exception("Vehicle Image Missing")
+                    
+                yolo_res = self._run_yolo_detection(org, vehicle_image)
+                
+                from core.models import CustomYoloModel, Vehicle
+                yolo_model = CustomYoloModel.objects.filter(organization=org, is_active=True).first()
+                compliance_result = check_full_compliance(yolo_res['detections'], yolo_model)
+                
+                # --- NEW OCR MATCHING LOGIC ---
+                import difflib
+                detected_plate = yolo_res.get('plate_number', '').strip().upper()
+                final_plate = detected_plate
+                vehicle_obj = None
+                
+                if vehicle_id:
+                    vehicle_obj = Vehicle.objects.filter(id=vehicle_id).first()
+                    if vehicle_obj:
+                        expected_plate = vehicle_obj.plate_number.strip().upper()
+                        # Allow minor OCR errors (e.g. 0 vs O, missing character)
+                        if detected_plate and expected_plate:
+                            similarity = difflib.SequenceMatcher(None, detected_plate, expected_plate).ratio()
+                            if similarity >= 0.70:
+                                # Overwrite messy OCR with actual clean DB plate
+                                final_plate = expected_plate
+                                # Guarantee plate compliance if it matches our expected vehicle
+                                if 'required_classes' in compliance_result:
+                                    if 'number_plate' in compliance_result['required_classes']:
+                                        compliance_result['required_classes']['number_plate']['passed'] = True
+                                        compliance_result['passed'] = all(c['passed'] for c in compliance_result['required_classes'].values())
+
+                vehicle_rec = VehicleComplianceRecord.objects.create(
+                    organization=org, yolo_model_id=yolo_res.get('model_id'),
+                    detections=yolo_res['detections'], 
+                    plate_number=final_plate,  # Save clean plate if matched
+                    compliance_passed=compliance_result['passed'],
+                    compliance_details=compliance_result
+                )
+                if yolo_res.get('annotated_image'):
+                     vehicle_rec.vehicle_image.save(f'vehicle_unified.jpg', ContentFile(yolo_res['annotated_image']), save=True)
+                else:
+                     vehicle_image.seek(0)
+                     vehicle_rec.vehicle_image.save(f'vehicle_unified.jpg', ContentFile(vehicle_image.read()), save=True)
+                
+                # --- 4. Create Trip ---
+                route_obj = None
+                if route_id:
+                    from core.models import Route
+                    route_obj = Route.objects.filter(id=route_id).first()
+
+                trip = Trip.objects.create(
+                    organization=org,
+                    driver=driver,
+                    helper=helper, # Can be None
+                    route=route_obj,
+                    vehicle=vehicle_obj, # Save selected vehicle
+                    checkin_time=now,
+                    checkin_driver_detection=driver_det,
+                    checkin_helper_detection=helper_det,
+                    checkin_vehicle=vehicle_rec,
+                    checkin_compliance_passed=compliance_result['passed'],
+                    checkin_latitude=lat,
+                    checkin_longitude=lng,
+                    
+                    # Status logic
+                    helper_skipped=not bool(helper),
+                    status='checkin_complete'
+                )
+                
+                return Response({
+                    'success': True,
+                    'message': 'Unified Check-in Complete!',
+                    'trip_id': str(trip.id),
+                    'compliance_passed': compliance_result['passed']
+                })
+
+        except Exception as e:
+            # Transaction rolls back automatically on exception
+            logger.error(f"Unified Checkin Error: {e}")
+            return Response({'error': str(e)}, status=500)
+    @action(detail=True, methods=['post'], url_path='unified-checkout')
+    def unified_checkout(self, request, pk=None):
+        """
+        Atomic Checkout for Single Screen Flow.
+        Completes Trip ONLY after all data is received and validated.
+        
+        POST /trips/{id}/unified-checkout/
+        """
+        trip = get_object_or_404(Trip, pk=pk)
+        
+        if trip.status == 'trip_completed' or trip.status == 'completed':
+            return Response({'error': "Trip already completed"}, status=400)
+            
+        try:
+            from django.db import transaction
+            # ATOMIC BLOCK START
+            with transaction.atomic():
+                # Refresh trip to lock row and ensure status hasn't changed
+                trip = Trip.objects.select_for_update().get(pk=trip.pk)
+                if trip.status == 'completed':
+                     return Response({'error': "Trip already completed (Race Condition)"}, status=400)
+
+                # 1. Driver Verification
+                now = timezone.now()
+                from django.core.files.base import ContentFile
+                
+                if trip.is_substitute_driver:
+                    # SUBSTITUTE: Accept simple photo
+                    sub_photo = request.FILES.get('driver_photo') or request.FILES.get('substitute_photo')
+                    driver_det = LoginDetectionResult.objects.create(
+                        organization=trip.organization, employee=trip.driver,
+                        face_confidence=0.0,
+                        detections={'substitute': True}, compliance_passed=True
+                    )
+                    if sub_photo:
+                        sub_photo.seek(0)
+                        driver_det.frame_image.save(
+                            f'{trip.driver.employee_id}_sub_checkout_unified.jpg',
+                            ContentFile(sub_photo.read()), save=True
+                        )
+                else:
+                    # NORMAL: Face verification
+                    driver_frames = request.FILES.getlist('driver_frames')
+                    driver_chal = request.data.get('driver_challenge_frame')
+                    
+                    if not driver_frames:
+                         return Response({'error': "Driver frames missing"}, status=400)
+                         
+                    driver_res = self._verify_face(
+                        trip.driver, driver_frames[len(driver_frames)//2], trip.organization, 
+                        frame_files=driver_frames, challenge_frame=driver_chal,
+                        skip_liveness=True
+                    )
+                    if not driver_res['success']:
+                        raise Exception(f"Driver Verification Failed: {driver_res.get('error')}")
+                    
+                    driver_det = LoginDetectionResult.objects.create(
+                        organization=trip.organization, employee=trip.driver, 
+                        face_confidence=driver_res.get('confidence', 0),
+                        detections={}, compliance_passed=True
+                    )
+                    driver_frames[len(driver_frames)//2].seek(0)
+                    driver_det.frame_image.save(
+                        f'{trip.driver.employee_id}_checkout_unified.jpg', 
+                        ContentFile(driver_frames[len(driver_frames)//2].read()), save=True
+                    )
+                
+                # 2. Helper Verification (If enabled in trip)
+                helper_det = None
+                
+                if trip.helper and not trip.helper_skipped:
+                    if trip.is_substitute_helper:
+                        # SUBSTITUTE: Accept simple photo
+                        helper_photo = request.FILES.get('helper_photo') or request.FILES.get('substitute_helper_photo')
+                        helper_det = LoginDetectionResult.objects.create(
+                            organization=trip.organization, employee=trip.helper,
+                            face_confidence=0.0,
+                            detections={'substitute': True}, compliance_passed=True
+                        )
+                        if helper_photo:
+                            helper_photo.seek(0)
+                            helper_det.frame_image.save(
+                                f'{trip.helper.employee_id}_sub_checkout_unified.jpg',
+                                ContentFile(helper_photo.read()), save=True
+                            )
+                    else:
+                        # NORMAL: Face verification
+                        helper_frames = request.FILES.getlist('helper_frames')
+                        helper_chal = request.data.get('helper_challenge_frame')
+                        
+                        if not helper_frames:
+                            raise Exception("Helper frames missing for checkout")
+                            
+                        helper_res = self._verify_face(
+                            trip.helper, helper_frames[len(helper_frames)//2], trip.organization,
+                            frame_files=helper_frames, challenge_frame=helper_chal,
+                            skip_liveness=True
+                        )
+                        if not helper_res['success']:
+                            raise Exception(f"Helper Verification Failed: {helper_res.get('error')}")
+                            
+                        helper_det = LoginDetectionResult.objects.create(
+                            organization=trip.organization, employee=trip.helper,
+                            face_confidence=helper_res.get('confidence', 0),
+                            detections={}, compliance_passed=True
+                        )
+                        helper_frames[len(helper_frames)//2].seek(0)
+                        helper_det.frame_image.save(
+                            f'{trip.helper.employee_id}_checkout_unified.jpg', 
+                            ContentFile(helper_frames[len(helper_frames)//2].read()), save=True
+                        )
+                
+                # 3. Vehicle Compliance
+                vehicle_image = request.FILES.get('vehicle_image')
+                if not vehicle_image:
+                     raise Exception("Vehicle Image Missing")
+                     
+                yolo_res = self._run_yolo_detection(trip.organization, vehicle_image)
+                yolo_model = CustomYoloModel.objects.filter(organization=trip.organization, is_active=True).first()
+                compliance_result = check_full_compliance(yolo_res['detections'], yolo_model)
+                
+                vehicle_rec = VehicleComplianceRecord.objects.create(
+                    organization=trip.organization, yolo_model_id=yolo_res.get('model_id'),
+                    detections=yolo_res['detections'], 
+                    plate_number=yolo_res.get('plate_number', ''), # FIX: Save Plate Number
+                    compliance_passed=compliance_result['passed'],
+                    compliance_details=compliance_result
+                )
+                if yolo_res.get('annotated_image'):
+                     vehicle_rec.vehicle_image.save(f'vehicle_checkout_unified.jpg', ContentFile(yolo_res['annotated_image']), save=True)
+                else:
+                     vehicle_image.seek(0)
+                     vehicle_rec.vehicle_image.save(f'vehicle_checkout_unified.jpg', ContentFile(vehicle_image.read()), save=True)
+
+                # 4. Finalize Trip
+                trip.checkout_driver_detection = driver_det
+                trip.checkout_helper_detection = helper_det
+                trip.checkout_vehicle = vehicle_rec
+                trip.checkout_compliance_passed = compliance_result['passed']
+                trip.checkout_time = now
+                trip.checkout_latitude = request.data.get('latitude')
+                trip.checkout_longitude = request.data.get('longitude')
+                trip.status = 'completed'
+                
+                # Calc Duration
+                if trip.checkin_time:
+                    duration = now - trip.checkin_time
+                    trip.work_duration = duration
+                
+                trip.save()
+                
+                return Response({
+                    'success': True,
+                    'message': 'Unified Checkout Complete!',
+                    'trip_id': str(trip.id),
+                    'work_duration': trip.work_duration
+                })
+
+        except Exception as e:
+            logger.error(f"Unified Checkout Error: {e}")
+            return Response({'error': str(e)}, status=500)

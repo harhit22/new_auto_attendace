@@ -204,9 +204,14 @@ const FaceModelPage = () => {
         }
     };
 
+    const [trainingProgress, setTrainingProgress] = useState({ current: 0, total: 0, active: false });
+
     const trainEmployee = async () => {
         if (!selectedEmployee) return;
-        setStatus(`🔄 Training ${selectedEmployee.name}...`);
+        setStatus(`🔄 Training ${selectedEmployee.name} (${selectedEmployee.image_count || 0} images)...`);
+        setIsTraining(true);
+        // Simulate progress for UX (since backend is synchronous)
+        setTrainingProgress({ current: 0, total: 1, active: true });
         try {
             const res = await fetch(`${API_BASE}/train-employee/`, {
                 method: 'POST',
@@ -218,26 +223,53 @@ const FaceModelPage = () => {
             loadAllData();
         } catch (e) {
             setStatus(`❌ ${e.message}`);
+        } finally {
+            setIsTraining(false);
         }
     };
 
     const trainAll = async () => {
-        setIsTraining(true);
-        setStatus('🔄 Training all...');
-        try {
-            const res = await fetch(`${API_BASE}/train-model/`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ org_code: attendanceOrg.org_code, mode: 'light' })
-            });
-            const data = await res.json();
-            setStatus(data.success ? `✅ ${data.message}` : `❌ ${data.error}`);
-            loadAllData();
-        } catch (e) {
-            setStatus(`❌ ${e.message}`);
-        } finally {
-            setIsTraining(false);
+        // Filter employees that need training (or just all valid ones)
+        // For "Train All", we usually want to ensure everyone is up to date, or maybe just untrained ones?
+        // Let's train everyone to be safe, or we can add a prompt. For now, train ALL active employees.
+        const employeesToTrain = employees.filter(e => e.image_count > 0);
+
+        if (employeesToTrain.length === 0) {
+            setStatus('⚠️ No employees with images to train.');
+            return;
         }
+
+        if (!window.confirm(`Start training for ${employeesToTrain.length} employees? This may take a while.`)) return;
+
+        setIsTraining(true);
+        setTrainingProgress({ current: 0, total: employeesToTrain.length, active: true });
+        setStatus('🚀 Starting batch training...');
+
+        let successCount = 0;
+        let failCount = 0;
+
+        for (let i = 0; i < employeesToTrain.length; i++) {
+            const emp = employeesToTrain[i];
+            setTrainingProgress({ current: i + 1, total: employeesToTrain.length, active: true });
+
+            try {
+                const res = await fetch(`${API_BASE}/train-employee/`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ org_code: attendanceOrg.org_code, employee_id: emp.employee_id, mode: 'light' })
+                });
+                if (res.ok) successCount++;
+                else failCount++;
+            } catch (e) {
+                console.error(`Failed to train ${emp.name}`, e);
+                failCount++;
+            }
+        }
+
+        setStatus(`✅ Batch Training Complete: ${successCount} successes, ${failCount} failures.`);
+        setIsTraining(false);
+        setTrainingProgress({ current: 0, total: 0, active: false });
+        loadAllData();
     };
 
     const testEmployee = async () => {
@@ -291,6 +323,21 @@ const FaceModelPage = () => {
                     </div>
                 </div>
                 {status && <div style={{ marginTop: '8px', fontSize: '0.85rem', opacity: 0.9 }}>{status}</div>}
+
+                {/* Progress Bar */}
+                {trainingProgress.active && (
+                    <div style={{ marginTop: '12px', background: 'rgba(0,0,0,0.2)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
+                        <div style={{
+                            width: `${(trainingProgress.current / trainingProgress.total) * 100}%`,
+                            height: '100%',
+                            background: '#fbbf24', // Amber/Yellow for visibility
+                            transition: 'width 0.3s ease-out'
+                        }} />
+                        <div style={{ textAlign: 'right', fontSize: '0.7rem', marginTop: '4px' }}>
+                            {trainingProgress.current} / {trainingProgress.total}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Main Content: Two Panels */}
@@ -441,8 +488,37 @@ const FaceModelPage = () => {
 
                             {/* Action Buttons - Simplified */}
                             <div style={{ display: 'flex', gap: '10px', marginBottom: '20px' }}>
-                                <button onClick={trainEmployee} style={{ background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white', border: 'none', padding: '12px 24px', borderRadius: '8px', cursor: 'pointer', fontWeight: '600', fontSize: '0.95rem' }}>
-                                    🧠 {selectedEmployee.light_trained ? 'Retrain Model' : 'Train Model'}
+                                <button
+                                    onClick={trainEmployee}
+                                    disabled={isTraining}
+                                    style={{
+                                        background: isTraining ? '#94a3b8' : 'linear-gradient(135deg, #10b981, #059669)',
+                                        color: 'white',
+                                        border: 'none',
+                                        padding: '12px 24px',
+                                        borderRadius: '8px',
+                                        cursor: isTraining ? 'not-allowed' : 'pointer',
+                                        fontWeight: '600',
+                                        fontSize: '0.95rem',
+                                        display: 'flex', alignItems: 'center', gap: '8px',
+                                        minWidth: '140px', justifyContent: 'center'
+                                    }}
+                                >
+                                    {isTraining ? (
+                                        <>
+                                            <div className="spinner" style={{
+                                                width: '16px', height: '16px',
+                                                border: '2px solid white', borderTop: '2px solid transparent',
+                                                borderRadius: '50%', animation: 'spin 1s linear infinite'
+                                            }} />
+                                            <span>Training...</span>
+                                            <style>{`@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }`}</style>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <span>🧠</span> {selectedEmployee.light_trained ? 'Retrain Model' : 'Train Model'}
+                                        </>
+                                    )}
                                 </button>
                                 <button onClick={() => setTestMode(!testMode)} style={{ background: testMode ? '#6366f1' : '#e2e8f0', color: testMode ? 'white' : '#475569', border: 'none', padding: '12px 20px', borderRadius: '8px', cursor: 'pointer', fontWeight: '500' }}>
                                     🎯 Test

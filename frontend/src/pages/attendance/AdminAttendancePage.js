@@ -176,6 +176,38 @@ const AdminAttendancePage = () => {
         setLoading(false);
     };
 
+    const handleDownloadReport = async () => {
+        // Build query params similar to list()
+        const params = new URLSearchParams();
+        if (attendanceOrg?.id) params.append('organization_id', attendanceOrg.id);
+        if (selectedArea?.id) params.append('area_id', selectedArea.id);
+        if (selectedWard?.id) params.append('ward_id', selectedWard.id);
+        if (selectedRoute?.id) params.append('route_id', selectedRoute.id);
+
+        // Date params
+        params.append('start_date', formatDateForAPI(startDate));
+        params.append('end_date', formatDateForAPI(endDate));
+
+        try {
+            const res = await fetch(`${API_BASE}/trips/export_excel/?${params.toString()}`);
+            if (res.ok) {
+                const blob = await res.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Trips_Report_${formatDateForAPI(startDate)}_to_${formatDateForAPI(endDate)}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            } else {
+                alert('Failed to download report');
+            }
+        } catch (e) {
+            console.error('Download failed', e);
+            alert('Download failed');
+        }
+    };
+
     const handleBack = () => {
         if (step === 3) {
             setStep(2);
@@ -381,6 +413,25 @@ const AdminAttendancePage = () => {
                         }}
                     >
                         Dashboard
+                    </button>
+
+                    {/* Download Report Button */}
+                    <button
+                        onClick={handleDownloadReport}
+                        style={{
+                            background: '#0ea5e9',
+                            border: '1px solid #0284c7',
+                            color: 'white',
+                            padding: '6px 16px',
+                            borderRadius: '6px',
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            fontWeight: '600',
+                            transition: 'all 0.2s',
+                            display: 'flex', alignItems: 'center', gap: '6px'
+                        }}
+                    >
+                        <span>📊</span> Excel Report
                     </button>
                 </div>
             </div>
@@ -670,10 +721,23 @@ const TripCard = ({ trip }) => {
         missingItems = [...new Set(missingItems)];
 
         // Build unified checklist: all detected + all missing
-        const allItems = [
-            ...detectedItems.map(item => ({ name: item, found: true })),
-            ...missingItems.map(item => ({ name: item, found: false }))
-        ];
+        // Remove duplicates by using a normalized Map (lower -> status)
+        const itemMap = new Map();
+
+        detectedItems.forEach(item => {
+            const key = item.toLowerCase().trim();
+            itemMap.set(key, { name: item, found: true });
+        });
+
+        missingItems.forEach(item => {
+            const key = item.toLowerCase().trim();
+            // Only add if not already marked as found (detected)
+            if (!itemMap.has(key)) {
+                itemMap.set(key, { name: item, found: false });
+            }
+        });
+
+        const allItems = Array.from(itemMap.values());
 
         return (
             <div style={{ marginTop: '10px' }}>
@@ -703,8 +767,8 @@ const TripCard = ({ trip }) => {
                     gap: '4px 12px',
                     fontSize: '12px'
                 }}>
-                    {allItems.map(item => (
-                        <div key={item.name} style={{
+                    {allItems.map((item, index) => (
+                        <div key={`${item.name}-${index}`} style={{
                             display: 'flex',
                             alignItems: 'center',
                             gap: '6px',
@@ -727,7 +791,7 @@ const TripCard = ({ trip }) => {
         );
     };
 
-    const TripSection = ({ title, time, location, color, driverImg, helperImg, vehicleImg, driverName, helperName, detections, compliancePassed, complianceDetails, isPending }) => (
+    const TripSection = ({ title, time, location, color, driverImg, helperImg, vehicleImg, driverName, helperName, detections, compliancePassed, complianceDetails, plateNumber, isPending }) => (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={{
                 padding: '12px 20px', borderBottom: `2px solid ${color}`,
@@ -779,6 +843,30 @@ const TripCard = ({ trip }) => {
                         )}
                         <div>
                             <ImageBox src={vehicleImg} label="Vehicle Scan" height="220px" fit="contain" />
+
+                            {/* Plate Number Display */}
+                            {plateNumber && (
+                                <div style={{
+                                    marginTop: '12px',
+                                    padding: '12px 16px',
+                                    background: 'linear-gradient(135deg, #fef3c7 0%, #fde68a 100%)',
+                                    border: '2px solid #fbbf24',
+                                    borderRadius: '10px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    gap: '10px'
+                                }}>
+                                    <span style={{ fontSize: '18px' }}>🚗</span>
+                                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                                        <span style={{ fontSize: '10px', fontWeight: '700', color: '#92400e', letterSpacing: '1px' }}>NUMBER PLATE</span>
+                                        <span style={{ fontSize: '20px', fontWeight: '800', color: '#78350f', fontFamily: 'monospace', letterSpacing: '2px' }}>
+                                            {plateNumber}
+                                        </span>
+                                    </div>
+                                </div>
+                            )}
+
                             <ComplianceAnalysis detections={detections} compliancePassed={compliancePassed} complianceDetails={complianceDetails} />
                         </div>
                     </div>
@@ -808,11 +896,49 @@ const TripCard = ({ trip }) => {
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column' }}>
                         <span style={{ fontSize: '16px', fontWeight: '700', color: '#111827' }}>{trip.route?.name || 'Unknown Route'}</span>
-                        <span style={{ fontSize: '13px', color: '#6b7280' }}>📅 {formatDate(trip.date)}</span>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '13px', color: '#6b7280' }}>📅 {formatDate(trip.date)}</span>
+                            {/* Header Plate Number Badge */}
+                            {(trip.checkin_vehicle_plate_number || trip.checkout_vehicle_plate_number) && (
+                                <span style={{
+                                    background: '#fef3c7',
+                                    color: '#b45309',
+                                    border: '1px solid #fbbf24',
+                                    padding: '2px 8px',
+                                    borderRadius: '6px',
+                                    fontSize: '11px',
+                                    fontWeight: '700',
+                                    fontFamily: 'monospace',
+                                    letterSpacing: '1px'
+                                }}>
+                                    {trip.checkin_vehicle_plate_number || trip.checkout_vehicle_plate_number}
+                                </span>
+                            )}
+                        </div>
                     </div>
                 </div>
-                <div style={{ padding: '6px 16px', borderRadius: '20px', background: trip.status === 'completed' ? '#dcfce7' : '#fef3c7', color: trip.status === 'completed' ? '#166534' : '#b45309', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase' }}>
-                    {trip.status.replace(/_/g, ' ')}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {trip.is_substitute_driver && (
+                        <div style={{
+                            padding: '4px 10px', borderRadius: '20px',
+                            background: '#fef3c7', color: '#92400e', border: '1px solid #f59e0b',
+                            fontSize: '11px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '4px'
+                        }}>
+                            🔄 बदली Driver{trip.substitute_driver_name ? `: ${trip.substitute_driver_name}` : ''}
+                        </div>
+                    )}
+                    {trip.is_substitute_helper && (
+                        <div style={{
+                            padding: '4px 10px', borderRadius: '20px',
+                            background: '#fce7f3', color: '#9d174d', border: '1px solid #ec4899',
+                            fontSize: '11px', fontWeight: '700', display: 'flex', alignItems: 'center', gap: '4px'
+                        }}>
+                            🔄 बदली Helper
+                        </div>
+                    )}
+                    <div style={{ padding: '6px 16px', borderRadius: '20px', background: trip.status === 'completed' ? '#dcfce7' : '#fef3c7', color: trip.status === 'completed' ? '#166534' : '#b45309', fontSize: '12px', fontWeight: '800', textTransform: 'uppercase' }}>
+                        {trip.status.replace(/_/g, ' ')}
+                    </div>
                 </div>
             </div>
 
@@ -823,6 +949,7 @@ const TripCard = ({ trip }) => {
                     driverImg={trip.checkin_driver_image} driverName={trip.driver?.name}
                     helperImg={trip.checkin_helper_image} helperName={trip.helper?.name}
                     vehicleImg={trip.checkin_vehicle_image} detections={trip.checkin_vehicle_detections}
+                    plateNumber={trip.checkin_vehicle_plate_number}
                     compliancePassed={trip.checkin_compliance_passed}
                     complianceDetails={trip.checkin_compliance_details}
                     isPending={false}
@@ -834,6 +961,7 @@ const TripCard = ({ trip }) => {
                     driverImg={trip.checkout_driver_image} driverName={trip.driver?.name}
                     helperImg={trip.checkout_helper_image} helperName={trip.helper?.name}
                     vehicleImg={trip.checkout_vehicle_image} detections={trip.checkout_vehicle_detections}
+                    plateNumber={trip.checkout_vehicle_plate_number}
                     compliancePassed={trip.checkout_compliance_passed}
                     complianceDetails={trip.checkout_compliance_details}
                     isPending={!trip.checkout_time}

@@ -23,11 +23,13 @@ const EmployeeLogin = () => {
     const [areas, setAreas] = useState([]);
     const [wards, setWards] = useState([]);
     const [routes, setRoutes] = useState([]);
+    const [vehicles, setVehicles] = useState([]); // NEW
 
     const [selectedOrg, setSelectedOrg] = useState(null); // Auto-set from ID
     const [selectedArea, setSelectedArea] = useState(null);
     const [selectedWard, setSelectedWard] = useState(null);
     const [selectedRoute, setSelectedRoute] = useState(null);
+    const [selectedVehicle, setSelectedVehicle] = useState(null); // NEW
 
     // User Context
     const [employeeId, setEmployeeId] = useState('');
@@ -95,6 +97,8 @@ const EmployeeLogin = () => {
             route_id: match.route?.id
         };
         sessionStorage.setItem('employee', JSON.stringify(sessionData));
+
+        // Always go to Dashboard first (User Request)
         navigate('/employee/dashboard');
     };
 
@@ -162,6 +166,22 @@ const EmployeeLogin = () => {
         setLoadingData(false);
     };
 
+    const fetchVehicles = async (areaId) => {
+        setLoadingData(true);
+        try {
+            const res = await fetch(`${API_BASE}/vehicles/?area_id=${areaId}`);
+            const data = await res.json();
+            if (data.success) {
+                setVehicles(data.vehicles);
+            } else {
+                setError(data.error || 'Vehicle load nahi hua');
+            }
+        } catch (e) {
+            setError('Connection failed');
+        }
+        setLoadingData(false);
+    };
+
     const selectArea = (area) => {
         setSelectedArea(area);
         setError('');
@@ -179,11 +199,20 @@ const EmployeeLogin = () => {
     const selectRoute = (route) => {
         setSelectedRoute(route);
         setError('');
-        // DIRECT LOGIN after selection
-        handleFinalLogin(route);
+        // User requested: Select vehicle AFTER route, but vehicle list belongs to AREA.
+        // We fetch vehicles for the Area they selected in Step 2.
+        fetchVehicles(selectedArea.id);
+        setStep(5);
     };
 
-    const handleFinalLogin = async (route) => {
+    const selectVehicle = (vehicle) => {
+        setSelectedVehicle(vehicle);
+        setError('');
+        // Perform final login and go to Dashboard
+        handleFinalLogin(selectedRoute, vehicle);
+    };
+
+    const handleFinalLogin = async (route, vehicle) => {
         setIsLoading(true);
         setError('');
 
@@ -206,7 +235,9 @@ const EmployeeLogin = () => {
                     org_code: data.organization.org_code,
                     org_name: data.organization.name,
                     route: route,
-                    route_id: route.id
+                    route_id: route.id,
+                    vehicle: vehicle,
+                    vehicle_id: vehicle.id
                 }));
                 navigate('/employee/dashboard');
             } else {
@@ -237,6 +268,10 @@ const EmployeeLogin = () => {
             setSelectedWard(null);
             setRoutes([]);
             setStep(3);
+        } else if (step === 5) {
+            setSelectedRoute(null);
+            setVehicles([]);
+            setStep(4);
         }
     };
 
@@ -246,6 +281,7 @@ const EmployeeLogin = () => {
         2: { title: 'AREA CHUNEIN', subtitle: `Swaagat hai, ${employeeName.split(' ')[0]}` },
         3: { title: 'WARD CHUNEIN', subtitle: `${selectedArea?.name || 'Area'} Ward` },
         4: { title: 'ROUTE CHUNEIN', subtitle: `Ward ${selectedWard?.number || ''} Route` },
+        5: { title: 'GADI CHUNEIN', subtitle: 'Apni duty ki gadi select karein' },
     };
 
     const currentStep = stepInfo[step];
@@ -290,7 +326,7 @@ const EmployeeLogin = () => {
         progressBar: {
             height: '100%',
             background: '#10b981', // Bright green
-            width: `${(step / 4) * 100}%`,
+            width: `${(step / 5) * 100}%`,
             transition: 'width 0.3s ease'
         },
         title: {
@@ -453,29 +489,40 @@ const EmployeeLogin = () => {
                 {items.map((item) => (
                     <button
                         key={item.id || item.org_code || item.code}
-                        onClick={() => onSelect(item)}
-                        style={styles.listItem}
-                        // Click effect simulation
+                        onClick={() => !item.is_locked && onSelect(item)}
+                        disabled={item.is_locked}
+                        style={{
+                            ...styles.listItem,
+                            opacity: item.is_locked ? 0.6 : 1,
+                            background: item.is_locked ? '#f1f5f9' : 'white',
+                            cursor: item.is_locked ? 'not-allowed' : 'pointer',
+                            borderColor: item.is_locked ? '#cbd5e1' : '#cbd5e1'
+                        }}
+                        // Click effect simulation (Only if not locked)
                         onMouseDown={(e) => {
-                            e.currentTarget.style.transform = 'translateY(4px)';
-                            e.currentTarget.style.boxShadow = 'none';
-                            e.currentTarget.style.borderColor = '#10b981';
+                            if (!item.is_locked) {
+                                e.currentTarget.style.transform = 'translateY(4px)';
+                                e.currentTarget.style.boxShadow = 'none';
+                                e.currentTarget.style.borderColor = '#10b981';
+                            }
                         }}
                         onMouseUp={(e) => {
-                            e.currentTarget.style.transform = 'translateY(0)';
-                            e.currentTarget.style.boxShadow = '0 4px 0 #cbd5e1';
-                            e.currentTarget.style.borderColor = '#cbd5e1';
-                        }}
-                        // No hover needed for touch, but good for feedback
-                        onMouseEnter={(e) => {
-                            e.currentTarget.style.borderColor = '#94a3b8';
-                        }}
-                        onMouseLeave={(e) => {
-                            e.currentTarget.style.borderColor = '#cbd5e1';
+                            if (!item.is_locked) {
+                                e.currentTarget.style.transform = 'translateY(0)';
+                                e.currentTarget.style.boxShadow = '0 4px 0 #cbd5e1';
+                                e.currentTarget.style.borderColor = '#cbd5e1';
+                            }
                         }}
                     >
                         <div>
-                            <div style={styles.itemName}>{item[nameKey]}</div>
+                            <div style={styles.itemName}>
+                                {item[nameKey]}
+                                {item.is_locked && (
+                                    <span style={{ fontSize: '0.9rem', color: '#ef4444', marginLeft: '8px' }}>
+                                        (🚫 {item.locked_by || 'Busy'})
+                                    </span>
+                                )}
+                            </div>
                             <div style={styles.itemMeta}>
                                 {item.name_hindi && `${item.name_hindi} `}
                                 {item.org_code || item.code || (item.number ? `Ward ${item.number}` : '')}
@@ -585,6 +632,9 @@ const EmployeeLogin = () => {
 
                     {/* STEP 4: Route */}
                     {step === 4 && renderSelectionList(routes, selectRoute, 'name')}
+
+                    {/* STEP 5: Vehicle */}
+                    {step === 5 && renderSelectionList(vehicles, selectVehicle, 'plate_number')}
 
                 </div>
             </div>

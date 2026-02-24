@@ -351,7 +351,7 @@ class Route(models.Model):
         db_table = 'routes'
         ordering = ['ward', 'code']
         unique_together = ['ward', 'code']
-    
+
     def __str__(self):
         return f"{self.code} - {self.name} (Ward {self.ward.number})"
     
@@ -363,6 +363,44 @@ class Route(models.Model):
     @property
     def organization(self):
         return self.ward.area.organization
+
+
+class Vehicle(models.Model):
+    """
+    Vehicles assigned to an Organization and operating within specific Areas.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='vehicles'
+    )
+    area = models.ForeignKey(
+        Area,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='vehicles',
+        help_text="Area where this vehicle operates"
+    )
+    
+    plate_number = models.CharField(max_length=50, help_text="Official license plate number (e.g. RJ14XX1234)")
+    name = models.CharField(max_length=100, blank=True, help_text="Optional name or description (e.g. Truck 1)")
+    is_active = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'vehicles'
+        ordering = ['plate_number']
+        unique_together = ['organization', 'plate_number']
+    
+    def __str__(self):
+        display = self.plate_number
+        if self.name:
+            display += f" - {self.name}"
+        return display
 
 
 class SaaSAttendance(models.Model):
@@ -560,6 +598,7 @@ class VehicleComplianceRecord(models.Model):
         blank=True
     )
     detections = models.JSONField(default=dict, help_text='{"hooter": true, "number_plate": true}')
+    plate_number = models.CharField(max_length=50, blank=True, null=True, help_text='Extracted number plate text from OCR')
     
     # Compliance result
     compliance_passed = models.BooleanField(default=False)
@@ -604,6 +643,15 @@ class Trip(models.Model):
         blank=True,
         related_name='trips',
         help_text="Assigned garbage collection route"
+    )
+    
+    vehicle = models.ForeignKey(
+        Vehicle,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='trips',
+        help_text="Assigned vehicle for this trip"
     )
     
     date = models.DateField(auto_now_add=True)
@@ -683,6 +731,17 @@ class Trip(models.Model):
     checkin_longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     checkout_latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     checkout_longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    
+    # Substitute Driver (replacement person)
+    is_substitute_driver = models.BooleanField(default=False)
+    substitute_driver_name = models.CharField(max_length=200, blank=True)
+    substitute_driver_phone = models.CharField(max_length=15, blank=True)
+    substitute_driver_photo = models.ImageField(upload_to='substitutes/drivers/', null=True, blank=True)
+    substitute_driver_license = models.ImageField(upload_to='substitutes/licenses/', null=True, blank=True)
+    
+    # Substitute Helper (replacement person)
+    is_substitute_helper = models.BooleanField(default=False)
+    substitute_helper_photo = models.ImageField(upload_to='substitutes/helpers/', null=True, blank=True)
     
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

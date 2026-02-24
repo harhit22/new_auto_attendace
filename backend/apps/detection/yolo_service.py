@@ -23,8 +23,17 @@ class YoloDetectionService:
     Service for running custom YOLO models on images.
     """
     
+    DEFAULT_MODEL_ID = 'default'
+    DEFAULT_MODEL_PATH = 'yolov8n.pt'
+
     def __init__(self):
         self._loaded_models: Dict[str, YOLO] = {}
+        
+    def ensure_default_model(self):
+        """Ensure the standard yolov8n.pt model is loaded."""
+        if self.DEFAULT_MODEL_ID not in self._loaded_models:
+            logger.info(f"Loading default YOLO model: {self.DEFAULT_MODEL_PATH}")
+            self.load_model(self.DEFAULT_MODEL_PATH, self.DEFAULT_MODEL_ID)
     
     def load_model(self, model_path: str, model_id: str) -> bool:
         """
@@ -197,6 +206,16 @@ class YoloDetectionService:
         if model_id in self._loaded_models:
             del self._loaded_models[model_id]
             logger.info(f"Unloaded YOLO model: {model_id}")
+
+    def detect_default(self, image_path: str, confidence=0.5) -> Dict[str, bool]:
+        """Run detection using the default model."""
+        self.ensure_default_model()
+        return self.detect(image_path, self.DEFAULT_MODEL_ID, confidence)
+
+    def detect_default_with_details(self, image_path: str, confidence=0.5) -> List[Dict]:
+        """Run detection with details using default model."""
+        self.ensure_default_model()
+        return self.detect_with_details(image_path, self.DEFAULT_MODEL_ID, confidence)
 
 
 # Singleton instance

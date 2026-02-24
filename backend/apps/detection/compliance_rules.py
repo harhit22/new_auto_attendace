@@ -10,7 +10,19 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Special OR groups - if ANY of these are detected, the requirement is satisfied
-NUMBER_PLATE_ALTERNATIVES = ['number plate', 'painted number plate']
+NUMBER_PLATE_ALTERNATIVES = ['number plate', 'painted number plate', 'number_plate']
+HOOTER_ALTERNATIVES = ['hooter', 'beacon', 'red_light']
+LOGO_ALTERNATIVES = ['logo', 'swachh_bharat', 'emblem']
+NN_ALTERNATIVES = ['nagar_nigam', 'text_nn', 'nn_text']
+
+# Map standard requirement names to their alternatives
+REQUIREMENT_GROUPS = {
+    'number plate': NUMBER_PLATE_ALTERNATIVES,
+    'hooter': HOOTER_ALTERNATIVES,
+    'logo': LOGO_ALTERNATIVES,
+    'nagar nigam': NN_ALTERNATIVES,
+    'nagar_nigam': NN_ALTERNATIVES, # Handle both snake_case and space
+}
 
 
 def check_compliance_dynamic(detections: dict, required_classes: list) -> dict:
@@ -55,18 +67,33 @@ def check_compliance_dynamic(detections: dict, required_classes: list) -> dict:
     for req_class in required_classes:
         req_lower = req_class.lower().strip()
         
-        # Special handling for Number Plate alternatives
-        if req_lower in NUMBER_PLATE_ALTERNATIVES:
-            # Check if ANY number plate type was detected
-            if not number_plate_found:  # Only check once
-                for alt in NUMBER_PLATE_ALTERNATIVES:
-                    if detected_lower.get(alt):
-                        number_plate_found = True
-                        detected.append("Number Plate")
-                        break
-                if not number_plate_found:
-                    missing.append("Number Plate")
+        # Check if this requirement belongs to a special group (OR logic)
+        alternatives = REQUIREMENT_GROUPS.get(req_lower)
+        if not alternatives:
+            # Also check if it matches any standard key in the map
+            for key, headers in REQUIREMENT_GROUPS.items():
+                if req_lower in headers:
+                    alternatives = headers
+                    break
+        
+        if alternatives:
+            # Check if ANY item from the group was detected
+            group_found = False
+            for alt in alternatives:
+                if detected_lower.get(alt):
+                    group_found = True
+                    detected.append(req_class) # Record the requirement name as detected
+                    break
+            
+            if not group_found:
+                missing.append(req_class)
             continue
+        
+        # Normal class check (Exact Match)
+        if detected_lower.get(req_lower):
+            detected.append(req_class)
+        else:
+            missing.append(req_class)
         
         # Normal class check
         if detected_lower.get(req_lower):
@@ -116,6 +143,11 @@ def check_full_compliance(detections: dict, yolo_model=None) -> dict:
                 is_required=True
             ).values_list('class_name', flat=True)
         )
+    
+    # DEFAULT COMPLIANCE RULES (If nothing configured in DB)
+    # As requested: Hooter, Logo, Nagar Nigam, Number Plate are MANDATORY
+    if not required_classes:
+        required_classes = ['number plate', 'hooter', 'logo', 'nagar nigam']
     
     logger.info(f"Required classes from DB: {required_classes}")
     logger.info(f"Detections: {detections}")

@@ -31,6 +31,10 @@ tf-keras>=2.15.0
 insightface>=0.7.3
 onnxruntime>=1.16.0
 mediapipe>=0.10.9
+# OCR Dependencies
+# OCR Dependencies
+paddlepaddle>=2.6.0
+paddleocr>=2.7.0
 
 # Environment & Config
 python-decouple>=3.8
@@ -49,3 +53,6 @@ cryptography>=41.0.0
 # Production
 gunicorn>=21.2.0
 whitenoise>=6.6.0
+
+# Excel Export
+openpyxl>=3.1.0

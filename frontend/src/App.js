@@ -24,6 +24,8 @@ import FaceModelPage from './pages/attendance/FaceModelPage';
 import YoloModelsPage from './pages/attendance/YoloModelsPage';
 import MultiLoginPage from './pages/attendance/MultiLoginPage';
 import EmployeeLogin from './pages/attendance/EmployeeLogin';
+import UnifiedCheckin from './pages/attendance/UnifiedCheckin';
+import UnifiedCheckout from './pages/attendance/UnifiedCheckout';
 import EmployeeDashboard from './pages/attendance/EmployeeDashboard';
 import HelperLoginPage from './pages/attendance/HelperLoginPage';
 import VehicleCapturePage from './pages/attendance/VehicleCapturePage';
@@ -104,6 +106,8 @@ function App() {
 
           {/* Employee Trip Workflow */}
           <Route path="/employee/login" element={<EmployeeLogin />} />
+          <Route path="/unified-checkin" element={<UnifiedCheckin />} />
+          <Route path="/unified-checkout" element={<UnifiedCheckout />} />
           <Route path="/employee/dashboard" element={<EmployeeDashboard />} />
           <Route path="/employee/helper-login" element={<HelperLoginPage />} />
           <Route path="/employee/vehicle-capture" element={<VehicleCapturePage />} />

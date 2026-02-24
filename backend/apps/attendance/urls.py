@@ -1,7 +1,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
-    OrganizationListView, AreaListView, WardListView, RouteListView,
+    OrganizationListView, AreaListView, WardListView, RouteListView, VehicleListView,
     RootAdminLoginView,
     OrgLoginView, VerifyEmployeeView, GetOrgSettingsView,
     EmployeeLoginView, CheckEmployeeIDView, EmployeeDashboardView,
@@ -39,15 +39,23 @@ trip_driver_checkout = TripViewSet.as_view({'post': 'driver_checkout'})
 trip_helper_checkout = TripViewSet.as_view({'post': 'helper_checkout'})
 trip_skip_helper_checkout = TripViewSet.as_view({'post': 'skip_helper_checkout'})
 trip_vehicle_checkout = TripViewSet.as_view({'post': 'vehicle_checkout'})
+trip_unified_checkin = TripViewSet.as_view({'post': 'unified_checkin'})
+trip_unified_checkout = TripViewSet.as_view({'post': 'unified_checkout'})
+trip_verify_liveness = TripViewSet.as_view({'post': 'verify_liveness'})
+trip_export_excel = TripViewSet.as_view({'get': 'export_excel'})
 
 urlpatterns = [
     path('', include(router.urls)),
     
     # Trip workflow
+    path('trips/export_excel/', trip_export_excel, name='trip-export-excel'),
     path('trips/', trip_list, name='trip-list'),
     path('trips/<uuid:pk>/', trip_retrieve, name='trip-detail'),
     path('trips/driver-checkin/', trip_driver_checkin, name='trip-driver-checkin'),
     path('trips/active-trip/', trip_active, name='trip-active'),
+    path('trips/verify-liveness/', trip_verify_liveness, name='trip-verify-liveness'),
+    path('trips/unified-checkin/', trip_unified_checkin, name='trip-unified-checkin'),
+    path('trips/<uuid:pk>/unified-checkout/', trip_unified_checkout, name='trip-unified-checkout'),
     path('trips/<uuid:pk>/helper-checkin/', trip_helper_checkin, name='trip-helper-checkin'),
     path('trips/<uuid:pk>/skip-helper/', trip_skip_helper, name='trip-skip-helper'),
     path('trips/<uuid:pk>/vehicle-checkin/', trip_vehicle_checkin, name='trip-vehicle-checkin'),
@@ -68,6 +76,7 @@ urlpatterns = [
     path('areas/', AreaListView.as_view(), name='area-list'),
     path('wards/', WardListView.as_view(), name='ward-list'),
     path('routes/', RouteListView.as_view(), name='route-list'),
+    path('vehicles/', VehicleListView.as_view(), name='vehicle-list'),
     path('check-employee-id/', CheckEmployeeIDView.as_view(), name='check-employee-id'),
     
     # Employee individual login

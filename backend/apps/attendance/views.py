@@ -16,8 +16,12 @@ from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.decorators import action
 import numpy as np
+import logging
 
-from core.models import Organization, SaaSEmployee as Employee, SaaSAttendance as AttendanceRecord, Trip, Area, Ward, Route
+logger = logging.getLogger(__name__)
+
+from core.models import Organization, SaaSEmployee as Employee, SaaSAttendance as AttendanceRecord, Trip, Area, Ward, Route, Vehicle
+from .serializers import EmployeeSerializer
 from django.db.models import Q
 
 
@@ -27,6 +31,7 @@ class OrganizationListView(APIView):
     Used for employee login organization selection.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         orgs = Organization.objects.filter(is_active=True).values(
@@ -45,6 +50,7 @@ class AreaListView(APIView):
     Used by driver login and admin interface.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         org_code = request.GET.get('org_code')
@@ -81,6 +87,7 @@ class WardListView(APIView):
     Get all wards for a specific area.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         area_id = request.GET.get('area_id')
@@ -111,6 +118,7 @@ class RouteListView(APIView):
     Get all routes for a specific ward.
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         ward_id = request.GET.get('ward_id')
@@ -118,7 +126,21 @@ class RouteListView(APIView):
             return Response({'error': 'ward_id required'}, status=400)
         
         try:
-            routes = Route.objects.filter(
+            # LOCKING LOGIC: Find routes active TODAY (not completed)
+            # Fetch Driver Name too for display
+            locked_trips = Trip.objects.filter(
+                route__ward_id=ward_id,
+                date=date.today()
+            ).exclude(status='completed').select_related('driver')
+            
+            # Map: Route ID -> Driver Name
+            locked_map = {}
+            for t in locked_trips:
+                if t.route_id:
+                     locked_map[t.route_id] = t.driver.full_name
+
+            # Fetch ALL Active Routes (Don't exclude locked ones)
+            routes_qs = Route.objects.filter(
                 ward_id=ward_id,
                 is_active=True
             ).values(
@@ -126,9 +148,47 @@ class RouteListView(APIView):
                 'distance_km', 'estimated_duration_hours'
             ).order_by('code')
             
+            # Annotate with Lock Status
+            final_routes = []
+            for r in routes_qs:
+                if r['id'] in locked_map:
+                    r['is_locked'] = True
+                    r['locked_by'] = locked_map[r['id']]
+                else:
+                    r['is_locked'] = False
+                    r['locked_by'] = None
+                final_routes.append(r)
+            
             return Response({
                 'success': True,
-                'routes': list(routes)
+                'routes': final_routes
+            })
+        except Exception as e:
+            return Response({'error': str(e)}, status=500)
+
+
+class VehicleListView(APIView):
+    """
+    Get all active vehicles for a specific area.
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    
+    def get(self, request):
+        area_id = request.GET.get('area_id')
+        if not area_id:
+            return Response({'error': 'area_id required'}, status=400)
+        
+        try:
+            vehicles = Vehicle.objects.filter(
+                area_id=area_id,
+                is_active=True
+            ).values('id', 'plate_number', 'name').order_by('plate_number')
+            
+            # Map name_hindi fallback or format display name if needed
+            return Response({
+                'success': True,
+                'vehicles': list(vehicles)
             })
         except Exception as e:
             return Response({'error': str(e)}, status=500)
@@ -141,6 +201,7 @@ class CheckEmployeeIDView(APIView):
     POST /api/v1/attendance/check-employee-id/
     """
     permission_classes = [AllowAny]
+    authentication_classes = [] # Fix for 403 Forbidden (CSRF bypass)
 
     def post(self, request):
         employee_id = request.data.get('employee_id', '').strip()
@@ -157,13 +218,18 @@ class CheckEmployeeIDView(APIView):
             return Response({'exists': False, 'error': 'ID not found'}, status=404)
 
         results = []
+        results = []
         for emp in matches:
-            # Check for active trip (Duty ON) - ANY incomplete trip
+            # Check for active trip (Duty ON) - ANY incomplete trip FOR TODAY ONLY
+            # User Requirement: If trip is from yesterday, ignore it (Treat as fresh day)
             active_trip = Trip.objects.filter(
                 Q(driver=emp) | Q(helper=emp),
-                organization=emp.organization
-            ).exclude(status='completed').first()
+                organization=emp.organization,
+                date=date.today() # Strict Day Check
+            ).exclude(status__in=['completed', 'trip_completed']).order_by('-created_at').first()
             
+            logger.info(f"🔍 Checking Duty for {emp.employee_id}: ActiveTrip={active_trip.id if active_trip else 'None'} Status={active_trip.status if active_trip else 'NA'}")
+
             is_active_duty = False
             trip_data = None
             route_data = None
@@ -178,7 +244,10 @@ class CheckEmployeeIDView(APIView):
                     }
                 trip_data = {
                     'id': str(active_trip.id),
-                    'start_time': active_trip.checkin_time.isoformat() if active_trip.checkin_time else None
+                    'start_time': active_trip.checkin_time.isoformat() if active_trip.checkin_time else None,
+                    'helper_id': active_trip.helper.employee_id if active_trip.helper else None,
+                    'helper_name': active_trip.helper.full_name if active_trip.helper else None,
+                    'route_name': active_trip.route.name if active_trip.route else None
                 }
 
             results.append({
@@ -217,6 +286,7 @@ class RootAdminLoginView(APIView):
     """
     Root admin login - manage all organizations.
     """
+    authentication_classes = []  # Fix for 403 Forbidden (CSRF bypass)
     permission_classes = [AllowAny]
     throttle_classes = []  # Disable throttling for admin login
     
@@ -270,6 +340,7 @@ class OrgLoginView(APIView):
     Returns organization info for the session
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
@@ -308,6 +379,7 @@ class VerifyEmployeeView(APIView):
     POST /api/v1/attendance/verify-employee/
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
@@ -349,6 +421,7 @@ class GetOrgSettingsView(APIView):
     GET /api/v1/attendance/org-settings/?org_code=XXX
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         org_code = request.GET.get('org_code', '').upper().strip()
@@ -379,6 +452,7 @@ class EmployeeLoginView(APIView):
     Employee login with individual credentials
     POST /api/v1/attendance/employee-login/
     """
+    authentication_classes = []  # Fix for 403 Forbidden (CSRF bypass)
     permission_classes = [AllowAny]
     
     def post(self, request):
@@ -433,6 +507,7 @@ class EmployeeDashboardView(APIView):
     GET /api/v1/attendance/employee-dashboard/?org_code=X&employee_id=Y
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         org_code = request.query_params.get('org_code', '').upper().strip()
@@ -493,8 +568,9 @@ class EmployeeDashboardView(APIView):
         # We generally expect only one active trip at a time per person.
         today_trip = Trip.objects.filter(
             Q(driver=employee) | Q(helper=employee),
-            organization=org
-        ).exclude(status='completed').first() # Get active trip
+            organization=org,
+            date=today # 🔹 FIX: Strict Day Check (Ignore yesterday's zombie trips)
+        ).exclude(status='completed').first() # Get active trip for TODAY
 
         # If no active, check for completed (latest check-out)
         if not today_trip:
@@ -534,7 +610,14 @@ class EmployeeDashboardView(APIView):
             },
             'today': {
                 'checked_in': check_in_time,
-                'checked_out': check_out_time
+                'checked_out': check_out_time,
+                'trip_id': str(today_trip.id) if today_trip else None,
+                'has_helper': bool(today_trip and today_trip.helper),
+                'helper_id': today_trip.helper.employee_id if today_trip and today_trip.helper else None,
+                'helper_name': today_trip.helper.full_name if today_trip and today_trip.helper else None,
+                'route_name': today_trip.route.name if today_trip and today_trip.route else None,
+                'is_substitute_driver': today_trip.is_substitute_driver if today_trip else False,
+                'is_substitute_helper': today_trip.is_substitute_helper if today_trip else False
             },
             'attendance': attendance_list
         })
@@ -554,6 +637,7 @@ class CaptureImagesView(APIView):
     """
     parser_classes = [MultiPartParser]
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
@@ -661,6 +745,7 @@ class ApproveImagesView(APIView):
     POST /api/v1/attendance/approve-images/
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         employee_id = request.data.get('employee_id')
@@ -688,6 +773,7 @@ class TrainModelView(APIView):
     - heavy: Uses DeepFace/ArcFace embeddings (Python-based, accurate, 512-dim)
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         from django.conf import settings
@@ -829,6 +915,7 @@ class TestEmployeeModelView(APIView):
     """
     parser_classes = [MultiPartParser]
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
@@ -940,6 +1027,7 @@ class DeleteEmployeeDataView(APIView):
     POST /api/v1/attendance/delete-employee-data/
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         from django.conf import settings
@@ -987,6 +1075,7 @@ class TrainingStatusView(APIView):
     GET /api/v1/attendance/training-status/?org_code=X
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         org_code = request.query_params.get('org_code', '').upper().strip()
@@ -1075,6 +1164,7 @@ class CheckInView(APIView):
     """
     parser_classes = [MultiPartParser]
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
@@ -1207,6 +1297,7 @@ class CheckOutView(APIView):
     """
     parser_classes = [MultiPartParser]
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
@@ -1313,8 +1404,14 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     CRUD for employees
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
+    serializer_class = EmployeeSerializer
     
     def get_queryset(self):
+        # Allow detail view (retrieve, update, delete) to work without organization_id
+        if self.action in ['retrieve', 'update', 'partial_update', 'destroy']:
+            return Employee.objects.all()
+            
         org_id = self.request.query_params.get('organization_id')
         if org_id:
             # Defer large JSON fields to avoid MySQL memory issues
@@ -1322,6 +1419,8 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 organization_id=org_id, 
                 status='active'
             ).defer('face_embeddings', 'captured_embeddings').order_by('employee_id')
+        
+        # For list action, require organization_id
         return Employee.objects.none()
     
     def list(self, request):
@@ -1332,7 +1431,10 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             'name': e.full_name,
             'first_name': e.first_name,
             'last_name': e.last_name,
+            'email': e.email,
+            'phone': e.phone,
             'department': e.department,
+            'designation': e.designation,
             'role': e.role,  # Add role field
             'password': e.password,  # Show password to admin
             'face_enrolled': e.face_enrolled,
@@ -1380,6 +1482,7 @@ class AttendanceRecordViewSet(viewsets.ModelViewSet):
     Attendance records
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get_queryset(self):
         org_id = self.request.query_params.get('organization_id')
@@ -1431,6 +1534,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     Organization CRUD
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     queryset = Organization.objects.filter(is_active=True)
     
     def list(self, request):
@@ -1479,6 +1583,7 @@ class EnrollFaceView(APIView):
     """Legacy endpoint - redirect to new capture flow"""
     parser_classes = [MultiPartParser]
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request, employee_id):
         return Response({
@@ -1492,6 +1597,7 @@ class EmployeeImagesView(APIView):
     GET /api/v1/attendance/employee-images/?org_code=X&employee_id=Y
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def get(self, request):
         from django.conf import settings
@@ -1548,6 +1654,7 @@ class UpdateOrgSettingsView(APIView):
     POST /api/v1/attendance/update-settings/
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         org_code = request.data.get('org_code', '').upper().strip()
@@ -1600,6 +1707,7 @@ class TrainSingleEmployeeView(APIView):
     POST /api/v1/attendance/train-employee/
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     
     def post(self, request):
         from django.conf import settings as django_settings

@@ -65,3 +65,7 @@ fix_trained_status.py
 # ML Models
 *.task
 *.onnx
+
+# Secrets
+wevois-dev-firebase-adminsdk-jem64-989a6da6b0.json
+*.json

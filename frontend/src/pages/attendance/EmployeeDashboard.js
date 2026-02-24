@@ -51,8 +51,24 @@ const EmployeeDashboard = () => {
     const [modelsLoaded, setModelsLoaded] = useState(false);
     const [checkinStatus, setCheckinStatus] = useState('');
     const [isVerifying, setIsVerifying] = useState(false);
+
+    // Substitute Mode (auto-resets daily)
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const [substituteMode, setSubstituteMode] = useState(() => {
+        return sessionStorage.getItem(`substituteMode_${today}`) === 'true';
+    });
+
+    const toggleSubstituteMode = () => {
+        const newVal = !substituteMode;
+        setSubstituteMode(newVal);
+        if (newVal) {
+            sessionStorage.setItem(`substituteMode_${today}`, 'true');
+        } else {
+            sessionStorage.removeItem(`substituteMode_${today}`);
+        }
+    };
     const [checkinAction, setCheckinAction] = useState('checkin');
-    const [flashActive, setFlashActive] = useState(false); // Active flash for liveness
+    // const [flashActive, setFlashActive] = useState(false); // REMOVED
 
     useEffect(() => {
         const storedEmployee = sessionStorage.getItem('employee');
@@ -81,8 +97,8 @@ const EmployeeDashboard = () => {
                 console.error('Failed to load face models:', e);
             }
         };
-        if (showCheckin) loadModels();
-    }, [showCheckin]);
+        loadModels();
+    }, []);
 
     // State to store GPS coordinates (captured early when camera opens)
     const [gpsLocation, setGpsLocation] = useState({ latitude: null, longitude: null });
@@ -120,10 +136,9 @@ const EmployeeDashboard = () => {
         // Wait for GPS before starting face detection
         if (!showCheckin || !modelsLoaded || isVerifying) return;
 
-        // If GPS not ready, show waiting message
+        // If GPS not ready, we proceed anyway (background capture)
         if (!gpsLocation.latitude || !gpsLocation.longitude) {
-            setCheckinStatus('📍 Location ढूंढ रहे हैं...');
-            return; // Don't start face detection until GPS is ready
+            console.warn('[GPS] Location not ready yet, but starting face detection anyway.');
         }
 
         let isMounted = true;
@@ -231,6 +246,8 @@ const EmployeeDashboard = () => {
                     setCheckinStatus(HINDI.turnHead);
                     speak('Chehra mil gaya. Ab gardan ko dheere se dayein baayein ghumayein.');
                 }
+
+                // REMOVED: Flash Logic (User Request)
 
                 if (i === 20) setCheckinStatus('📸 Hold Steady...');
 
@@ -481,6 +498,53 @@ const EmployeeDashboard = () => {
             {/* Content */}
             <div style={{ padding: '16px' }}>
 
+                {/* Substitute Mode Toggle */}
+                <div style={{
+                    background: substituteMode ? 'rgba(245, 158, 11, 0.1)' : 'white',
+                    borderRadius: '16px',
+                    padding: '16px 20px',
+                    marginBottom: '16px',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                    border: substituteMode ? '2px solid #f59e0b' : '1px solid #e2e8f0',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between'
+                }}>
+                    <div>
+                        <div style={{ fontSize: '1.1rem', fontWeight: '700' }}>
+                            🔄 {substituteMode ? 'Substitute ON' : 'बदली मोड'}
+                        </div>
+                        <div style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '4px' }}>
+                            {substituteMode ? 'चालू है - Face scan बंद' : 'OFF - Normal mode'}
+                        </div>
+                    </div>
+                    <button
+                        onClick={toggleSubstituteMode}
+                        style={{
+                            width: '56px',
+                            height: '30px',
+                            borderRadius: '15px',
+                            border: 'none',
+                            cursor: 'pointer',
+                            background: substituteMode ? '#f59e0b' : '#cbd5e1',
+                            position: 'relative',
+                            transition: 'background 0.3s'
+                        }}
+                    >
+                        <div style={{
+                            width: '24px',
+                            height: '24px',
+                            borderRadius: '50%',
+                            background: 'white',
+                            position: 'absolute',
+                            top: '3px',
+                            left: substituteMode ? '29px' : '3px',
+                            transition: 'left 0.3s',
+                            boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                        }} />
+                    </button>
+                </div>
+
                 {/* Face Check-in Card */}
                 <div style={{ background: 'white', borderRadius: '16px', padding: '20px', marginBottom: '16px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
                     <h3 style={{ marginBottom: '16px', textAlign: 'center', fontSize: '1.4rem', fontWeight: '800' }}>📷 Duty दर्ज करें</h3>
@@ -490,12 +554,19 @@ const EmployeeDashboard = () => {
                             {/* Check-in Button */}
                             <button
                                 onClick={() => {
-                                    setCheckinAction('checkin');
-                                    setShowCheckin(true);
-                                    setCheckinStatus('');
-                                    speak(HINDI.voiceCheckin);
+                                    speak(substituteMode ? 'Substitute mode, photo lein' : HINDI.voiceCheckin);
+                                    navigate('/unified-checkin', {
+                                        state: {
+                                            orgCode: employee.org_code,
+                                            employeeId: employee.employee_id,
+                                            employeeName: employee.name,
+                                            route: employee.route,
+                                            vehicle: employee.vehicle,
+                                            substituteMode: substituteMode
+                                        }
+                                    });
                                 }}
-                                disabled={!employee.face_enrolled || (dashboard?.today?.checked_in && !dashboard?.today?.checked_out)}
+                                disabled={(!substituteMode && !employee.face_enrolled) || (dashboard?.today?.checked_in && !dashboard?.today?.checked_out)}
                                 style={{
                                     width: '100%',
                                     padding: '24px 20px',
@@ -520,12 +591,23 @@ const EmployeeDashboard = () => {
                             {/* Check-out Button */}
                             <button
                                 onClick={() => {
-                                    setCheckinAction('checkout');
-                                    setShowCheckin(true);
-                                    setCheckinStatus('');
                                     speak(HINDI.voiceCheckout);
+                                    navigate('/unified-checkout', {
+                                        state: {
+                                            tripId: dashboard?.today?.trip_id,
+                                            driverName: employee.name,
+                                            driverId: employee.employee_id,
+                                            helperName: dashboard?.today?.helper_name,
+                                            helperId: dashboard?.today?.helper_id,
+                                            routeName: dashboard?.today?.route_name,
+                                            orgCode: employee.org_code,
+                                            substituteMode: substituteMode,
+                                            isSubstituteDriver: dashboard?.today?.is_substitute_driver || false,
+                                            isSubstituteHelper: dashboard?.today?.is_substitute_helper || false
+                                        }
+                                    });
                                 }}
-                                disabled={!employee.face_enrolled || !dashboard?.today?.checked_in || dashboard?.today?.checked_out}
+                                disabled={(!employee.face_enrolled && !substituteMode) || !dashboard?.today?.checked_in || dashboard?.today?.checked_out}
                                 style={{
                                     width: '100%',
                                     padding: '24px 20px',
@@ -657,17 +739,7 @@ const EmployeeDashboard = () => {
                                     {checkinAction === 'checkin' ? HINDI.dutyStart : HINDI.dutyEnd}
                                 </div>
 
-                                {/* ACTIVE FLASH OVERLAY */}
-                                {flashActive && (
-                                    <div style={{
-                                        position: 'absolute', top: 0, left: 0,
-                                        width: '100%', height: '100%',
-                                        background: 'rgba(255, 255, 255, 0.95)',
-                                        zIndex: 20,
-                                        animation: 'flashFade 0.2s ease-in-out',
-                                        pointerEvents: 'none'
-                                    }} />
-                                )}
+                                {/* ACTIVE FLASH OVERLAY REMOVED */}
 
                                 {/* Scan status at bottom */}
                                 <div style={{
@@ -774,67 +846,7 @@ const EmployeeDashboard = () => {
                 </div>
 
 
-                {/* Attendance History */}
-                <div className="card" style={{ padding: '24px' }}>
-                    <h3 style={{ marginBottom: '16px' }}>📊 Attendance History (Last 30 Days)</h3>
-
-                    {dashboard?.attendance?.length === 0 ? (
-                        <div style={{
-                            textAlign: 'center',
-                            padding: '40px',
-                            color: 'var(--text-muted)'
-                        }}>
-                            No attendance records yet
-                        </div>
-                    ) : (
-                        <div style={{ overflowX: 'auto' }}>
-                            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                                <thead>
-                                    <tr style={{ borderBottom: '2px solid var(--bg-soft)' }}>
-                                        <th style={{ padding: '12px', textAlign: 'left' }}>Date</th>
-                                        <th style={{ padding: '12px', textAlign: 'center' }}>Check In</th>
-                                        <th style={{ padding: '12px', textAlign: 'center' }}>Check Out</th>
-                                        <th style={{ padding: '12px', textAlign: 'center' }}>Status</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {dashboard?.attendance?.map((record, idx) => (
-                                        <tr key={idx} style={{ borderBottom: '1px solid var(--bg-soft)' }}>
-                                            <td style={{ padding: '12px' }}>
-                                                {new Date(record.date).toLocaleDateString('en-US', {
-                                                    weekday: 'short',
-                                                    month: 'short',
-                                                    day: 'numeric'
-                                                })}
-                                            </td>
-                                            <td style={{ padding: '12px', textAlign: 'center' }}>
-                                                {record.check_in || '-'}
-                                            </td>
-                                            <td style={{ padding: '12px', textAlign: 'center' }}>
-                                                {record.check_out || '-'}
-                                            </td>
-                                            <td style={{ padding: '12px', textAlign: 'center' }}>
-                                                <span style={{
-                                                    padding: '4px 10px',
-                                                    borderRadius: '50px',
-                                                    fontSize: '0.8rem',
-                                                    background: record.status === 'present' ? 'rgba(16, 185, 129, 0.1)' :
-                                                        record.status === 'late' ? 'rgba(245, 158, 11, 0.1)' :
-                                                            'rgba(239, 68, 68, 0.1)',
-                                                    color: record.status === 'present' ? 'var(--success)' :
-                                                        record.status === 'late' ? 'var(--warning)' :
-                                                            'var(--error)'
-                                                }}>
-                                                    {record.status || 'present'}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                    ))}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </div>
+                {/* Attendance History Removed per User Request */}
             </div>
         </div>
     );

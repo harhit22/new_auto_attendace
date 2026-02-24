@@ -5,7 +5,7 @@ from django.contrib import admin
 from .models import (
     Organization, SaaSEmployee,
     CustomYoloModel, DetectionRequirement, LoginDetectionResult,
-    VehicleComplianceRecord, Trip, Area, Ward, Route
+    VehicleComplianceRecord, Trip, Area, Ward, Route, Vehicle
 )
 
 
@@ -135,22 +135,37 @@ except Exception:
 
 @admin.register(VehicleComplianceRecord)
 class VehicleComplianceRecordAdmin(admin.ModelAdmin):
-    list_display = ['id', 'organization', 'timestamp', 'compliance_passed']
+    list_display = ['id', 'organization', 'timestamp', 'plate_number', 'compliance_passed']
     list_filter = ['organization', 'compliance_passed']
-    readonly_fields = ['timestamp']
+    readonly_fields = ['timestamp', 'plate_number']
     ordering = ['-timestamp']
     list_per_page = 25
 
 
 @admin.register(Trip)
 class TripAdmin(admin.ModelAdmin):
-    list_display = ['id', 'date', 'driver', 'helper', 'route', 'status', 'checkin_time', 'checkout_time']
+    list_display = ['id', 'date', 'driver', 'checkin_plate', 'checkout_plate', 'helper', 'route', 'status', 'checkin_time', 'checkout_time']
     list_filter = ['organization', 'status', 'date']
-    search_fields = ['driver__employee_id', 'driver__first_name', 'helper__employee_id']
+    search_fields = ['driver__employee_id', 'driver__first_name', 'helper__employee_id', 'checkin_vehicle__plate_number', 'checkout_vehicle__plate_number']
     ordering = ['-date', '-checkin_time']
     readonly_fields = ['created_at', 'updated_at', 'work_duration', 'date']
     date_hierarchy = 'date'
     list_per_page = 25
+    
+    # Custom methods to display plate numbers from related VehicleComplianceRecord
+    def checkin_plate(self, obj):
+        """Display check-in vehicle plate number"""
+        if obj.checkin_vehicle and obj.checkin_vehicle.plate_number:
+            return obj.checkin_vehicle.plate_number
+        return '-'
+    checkin_plate.short_description = 'IN Plate'
+    
+    def checkout_plate(self, obj):
+        """Display check-out vehicle plate number"""
+        if obj.checkout_vehicle and obj.checkout_vehicle.plate_number:
+            return obj.checkout_vehicle.plate_number
+        return '-'
+    checkout_plate.short_description = 'OUT Plate'
     
     # Use raw_id for ALL foreign keys to prevent slow dropdown loading
     raw_id_fields = [
@@ -192,4 +207,13 @@ class RouteAdmin(admin.ModelAdmin):
     list_filter = ['ward__area__organization', 'ward__area', 'ward', 'is_active']
     search_fields = ['code', 'name', 'name_hindi']
     ordering = ['ward', 'code']
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(Vehicle)
+class VehicleAdmin(admin.ModelAdmin):
+    list_display = ['plate_number', 'name', 'area', 'organization', 'is_active']
+    list_filter = ['organization', 'area', 'is_active']
+    search_fields = ['plate_number', 'name']
+    ordering = ['organization', 'plate_number']
     readonly_fields = ['created_at', 'updated_at']

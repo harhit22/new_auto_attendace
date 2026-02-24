@@ -24,6 +24,7 @@ router.register('organizations', OrganizationViewSet, basename='organizations')
 trip_viewset = TripViewSet.as_view({
     'get': 'list',
 })
+trip_export_excel = TripViewSet.as_view({'get': 'export_excel'})
 trip_driver_checkin = TripViewSet.as_view({'post': 'driver_checkin'})
 trip_helper_checkin = TripViewSet.as_view({'post': 'helper_checkin'})
 trip_skip_helper = TripViewSet.as_view({'post': 'skip_helper'})
@@ -32,13 +33,24 @@ trip_driver_checkout = TripViewSet.as_view({'post': 'driver_checkout'})
 trip_helper_checkout = TripViewSet.as_view({'post': 'helper_checkout'})
 trip_skip_helper_checkout = TripViewSet.as_view({'post': 'skip_helper_checkout'})
 trip_vehicle_checkout = TripViewSet.as_view({'post': 'vehicle_checkout'})
+trip_verify_liveness = TripViewSet.as_view({'post': 'verify_liveness'})
+trip_active = TripViewSet.as_view({'get': 'active_trip'})
+trip_unified_checkin = TripViewSet.as_view({'post': 'unified_checkin'})
+trip_unified_checkout = TripViewSet.as_view({'post': 'unified_checkout'})
+trip_retrieve = TripViewSet.as_view({'get': 'retrieve'})
 
 urlpatterns = [
     path('', include(router.urls)),
     
     # Trip workflow URLs (manual mapping)
+    path('trips/export_excel/', trip_export_excel, name='trip-export-excel'),
     path('trips/', trip_viewset, name='trip-list'),
+    path('trips/<uuid:pk>/', trip_retrieve, name='trip-detail'),
     path('trips/driver-checkin/', trip_driver_checkin, name='trip-driver-checkin'),
+    path('trips/active-trip/', trip_active, name='trip-active'),
+    path('trips/verify-liveness/', trip_verify_liveness, name='trip-verify-liveness'),
+    path('trips/unified-checkin/', trip_unified_checkin, name='trip-unified-checkin'),
+    path('trips/<uuid:pk>/unified-checkout/', trip_unified_checkout, name='trip-unified-checkout'),
     path('trips/<uuid:pk>/helper-checkin/', trip_helper_checkin, name='trip-helper-checkin'),
     path('trips/<uuid:pk>/skip-helper/', trip_skip_helper, name='trip-skip-helper'),
     path('trips/<uuid:pk>/vehicle-checkin/', trip_vehicle_checkin, name='trip-vehicle-checkin'),
